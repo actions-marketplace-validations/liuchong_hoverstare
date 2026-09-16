@@ -147,6 +147,20 @@ impl ToolShared {
                 _ => return Err(format!("invalid path: {rel}")),
             }
         }
+        // Repository state is the harness's business, not the model's: reading
+        // `.git/` costs a budget that is meant for source code, and a round that
+        // chases refs instead of editing files has already lost. Refused at the
+        // sandbox so no prompt has to be trusted for it.
+        if normalized
+            .components()
+            .next()
+            .is_some_and(|c| c.as_os_str() == ".git")
+        {
+            return Err(
+                "`.git/` is not readable: branch, commit and push state are handled for you"
+                    .to_string(),
+            );
+        }
         if normalized.as_os_str().is_empty() {
             return Err("empty path".to_string());
         }
@@ -1300,6 +1314,21 @@ mod tests {
         assert!(out.contains("edited"), "{out}");
         let content = std::fs::read_to_string(s.workspace().join("src/main.rs")).unwrap();
         assert!(content.contains("helper_three()"));
+    }
+
+    #[tokio::test]
+    async fn repository_internals_are_not_readable() {
+        let (_d, s) = setup();
+        std::fs::create_dir_all(s.workspace().join(".git/refs/heads")).unwrap();
+        std::fs::write(s.workspace().join(".git/refs/heads/master"), "deadbeef\n").unwrap();
+        let read = read_file(&s, ".git/refs/heads/master", None, None).await;
+        assert!(read.contains("not readable"), "{read}");
+        let edit = edit_file(&s, ".git/config", &[("a".to_string(), "b".to_string())]).await;
+        assert!(edit.contains("not readable"), "{edit}");
+        let written = write_file(&s, ".git/config", "x").await;
+        assert!(written.contains("not readable"), "{written}");
+        let globbed = glob(&s, ".git/**", None, None).await;
+        assert!(!globbed.contains("master"), "{globbed}");
     }
 
     #[tokio::test]
