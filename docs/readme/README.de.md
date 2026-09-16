@@ -155,6 +155,10 @@ set_temperature = true                # false für Endpoints, die nur Standard-T
 thinking = "enabled"
 reasoning_effort = "medium"
 context_tokens = 1000000
+compaction = true
+compaction_threshold_ratio = 0.75
+compaction_keep_ratio = 0.25
+summary_max_chars = 4000
 instructions = ""                     # team-spezifischer Review-Fokus, wird in den Systemprompt injiziert
 ```
 

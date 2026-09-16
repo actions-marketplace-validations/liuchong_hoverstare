@@ -141,6 +141,10 @@ set_temperature = true                # 端点只接受默认温度时置 false
 thinking = "enabled"
 reasoning_effort = "medium"
 context_tokens = 1000000
+compaction = true
+compaction_threshold_ratio = 0.75
+compaction_keep_ratio = 0.25
+summary_max_chars = 4000
 instructions = ""                     # 团队特定关注点，注入系统提示
 ```
 

@@ -4,7 +4,13 @@
 //! `rig_backend::RigBackend`, and can later be replaced by a self-built
 //! NativeBackend. The trait and its request/response types contain no
 //! framework types.
+//!
+//! Since spec 13 the multi-turn loop itself is owned by this crate
+//! (`agent_loop`) and a provider is reached through [`ChatClient`]: compaction
+//! has to replace conversation history, and history has to be ours for that.
 
+pub mod agent_loop;
+pub mod compaction;
 pub mod rig_backend;
 pub mod tools;
 
@@ -70,6 +76,66 @@ pub struct ToolCallRecord {
 pub struct Usage {
     pub input_tokens: u64,
     pub output_tokens: u64,
+}
+
+impl Usage {
+    pub fn add(&mut self, other: Usage) {
+        self.input_tokens += other.input_tokens;
+        self.output_tokens += other.output_tokens;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Provider-agnostic chat contract (spec 13)
+// ---------------------------------------------------------------------------
+
+/// One tool call requested by the model.
+#[derive(Debug, Clone)]
+pub struct ToolCall {
+    pub id: String,
+    pub name: String,
+    pub arguments: serde_json::Value,
+}
+
+/// One item of the conversation the loop owns.
+#[derive(Debug, Clone)]
+pub enum ConversationItem {
+    User {
+        text: String,
+    },
+    Assistant {
+        text: String,
+        tool_calls: Vec<ToolCall>,
+    },
+    ToolResult {
+        call_id: String,
+        text: String,
+    },
+}
+
+/// One provider call: system prompt, conversation so far, tool menu.
+#[derive(Debug, Clone)]
+pub struct ChatCall {
+    pub model: String,
+    pub system_prompt: String,
+    pub messages: Vec<ConversationItem>,
+    pub tools: Vec<tools::ToolSpec>,
+    pub temperature: Option<f64>,
+    pub max_tokens: u64,
+}
+
+/// One provider answer.
+#[derive(Debug, Clone, Default)]
+pub struct ChatReply {
+    pub text: String,
+    pub tool_calls: Vec<ToolCall>,
+    pub usage: Usage,
+}
+
+/// The provider seam. Implementations must not leak provider types through it.
+#[async_trait::async_trait]
+pub trait ChatClient: Send + Sync {
+    async fn complete(&self, call: ChatCall) -> Result<ChatReply, AgentError>;
 }
 
 /// Thinking-mode switch (spec 01 `thinking`), DeepSeek/OpenAI-compatible semantic.
@@ -192,6 +258,10 @@ pub enum AgentError {
     Timeout(Duration),
     #[error("agent call failed: {0}")]
     Backend(String),
+    /// The provider refused the request for exceeding its window (spec 13).
+    /// Kept apart from `Backend` so the loop can recover instead of failing.
+    #[error("request exceeds the model window: {0}")]
+    ContextOverflow(String),
 }
 
 #[async_trait::async_trait]

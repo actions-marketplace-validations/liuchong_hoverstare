@@ -109,20 +109,28 @@ pub struct ToolCallRecord { pub name: String, pub args_summary: String,
   API client，不是默认的 Responses API client）——已经 spike 实测验证
   （见 `spikes/rig-kimi-probe`，6/6 通过：base_url 接入、tool_use 多轮循环、
   3 路并发无限流、max_tokens 非必填）；
-- 构建 agent：`client.agent(model).preamble(system_prompt)` + 注册 4 个工具 +
-  temperature + max_tokens 显式设置（预算控制，与端点是否必填无关）；多轮循环由 rig agent 的 tool-call 执行能力承担；
+- **多轮循环由 hoverstare 自己持有**（spec 13）：`RigChatClient` 只做一次 provider 调用
+  （system + 对话项 + 工具清单进，文本 + tool calls + usage 出），
+  `agent_loop::AgentLoop` 负责循环、预算、轨迹与压缩。这样对话历史在 hoverstare 手里，
+  摘要才有落点；rig 不出现在 `ChatCall`/`ChatReply` 这些契约类型里；
+- 工具元数据（名称/描述/JSON schema）与按名分发在 `agent/tools.rs`，
+  provider 层只把它转成自己的形状；工具解析失败仍以普通文本返回，不中断循环；
 - **思考模式（spec 01 `thinking` / `reasoning_effort`）**：只在 OpenAI 兼容路径上生效，
-  通过 rig 的 `AgentBuilder::additional_params()` 合进请求体
+  通过 rig 的 `CompletionRequest.additional_params` 合进请求体
   （`{"thinking":{"type":"enabled"},"reasoning_effort":"medium"}`）；两个字段都未配置时
   一个都不发（老端点不认这两个字段会 400）。Anthropic 原生路径语义不同（`thinking` 需要
   `budget_tokens`），本版不发送。
-- **DeepSeek 思考模式 + tools 的历史回传**：带 tools 的请求需要在后续轮次回传历史
-  assistant 的 `reasoning_content`（DeepSeek 文档要求，否则多轮上下文不连贯）；
-  rig 0.36 已把该非标准字段解析为 `AssistantContent::Reasoning` 并原样回传，无需自行处理。
-  最终返回值只取 `content` 文本，思维链不会污染 findings JSON 提取（spec 06）。
-- 预算执行：max_tool_calls 在工具分发层计数，超预算后工具返回
+- **DeepSeek 思考模式 + tools 的历史回传**：带 tools 的请求按 DeepSeek 文档要在后续轮次
+  回传历史 assistant 的 `reasoning_content`（否则多轮上下文不连贯，实测缺它也不会 400）。
+  本版循环**不回灌推理内容**：`ConversationItem::Assistant` 只带文本与 tool calls，
+  与 spec 的“推理不回灌”一致；丢掉的是部分思维链连贯性，换来的是上下文不被思维链白吃
+  和更小的注入面。provider 返回的 `content` 仍是唯一进入 findings 提取的正文。
+- 预算执行：max_tool_calls 在工具分发层计数；预算花完后**不再向模型提供工具**
+  （最后几次调用必须给答案），超预算的工具调用返回
   `"budget exhausted, please conclude with current findings"`，引导模型收尾；
-  总超时用 `tokio::time::timeout` 包住整个 run；
+  总超时用 `tokio::time::timeout` 包住整个 run（含压缩与恢复）；
+- **上下文压缩与溢出恢复见 spec 13**；摘要请求与恢复请求各用**全新预算**，
+  不共享主 run 的计数器（避免恢复把重试的预算吃掉）；
 - 多 pass 并发：每个 pass 一个独立 agent 实例，互不共享状态。
 
 ## Prompt 契约

@@ -2,8 +2,9 @@
 //!
 //! The "eyes" of the review model. Everything is read-only at the machine level —
 //! no write tools exist in the tool registry at all.
-//! Framework-agnostic implementation: rig's Tool wrapper layer is in rig_backend.rs
-//! and only forwards calls here.
+//! Framework-agnostic implementation: the metadata (name, description, JSON
+//! schema) and the dispatch live here; the provider layer only converts these
+//! specs into whatever shape its API wants.
 
 use std::fmt;
 use std::future::Future;
@@ -68,6 +69,10 @@ impl ToolShared {
         &self.workspace
     }
 
+    pub fn base_ref(&self) -> &str {
+        &self.base_ref
+    }
+
     pub fn call_count(&self) -> u32 {
         self.calls.load(Ordering::SeqCst)
     }
@@ -79,10 +84,11 @@ impl ToolShared {
     /// Unified entry point for tool calls: budget gate + trace recording
     pub async fn run(
         &self,
-        name: &'static str,
+        name: impl Into<String>,
         args_summary: String,
         fut: impl Future<Output = String>,
     ) -> String {
+        let name = name.into();
         let n = self.calls.fetch_add(1, Ordering::SeqCst);
         if n >= self.max_calls {
             return "budget exhausted: tool call budget is exhausted; please conclude with the information you already have".to_string();
@@ -90,7 +96,7 @@ impl ToolShared {
         let t = Instant::now();
         let out = fut.await;
         self.trace.lock().unwrap().push(ToolCallRecord {
-            name: name.to_string(),
+            name,
             args_summary,
             duration: t.elapsed(),
             result_bytes: out.len(),
@@ -509,6 +515,183 @@ pub async fn show_base_file(shared: &ToolShared, path: &str) -> String {
         }
     }
     format!("cannot read base version of {rel} ({last_err})")
+}
+
+// ---------------------------------------------------------------------------
+// Tool metadata and dispatch (spec 04 §4.1, spec 13)
+// ---------------------------------------------------------------------------
+
+/// Framework-free tool metadata handed to a provider call.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ToolSpec {
+    pub name: &'static str,
+    pub description: &'static str,
+    pub parameters: serde_json::Value,
+}
+
+/// The tool menu for a profile. Review is always read-only; only the develop
+/// loop gets the two writing tools.
+pub fn specs(profile: crate::agent::ToolProfile) -> Vec<ToolSpec> {
+    let mut tools = vec![
+        ToolSpec {
+            name: "read_file",
+            description: "Read the contents of a file in the repository (with line numbers). Use it to see context around the diff or symbol definitions.",
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "File path relative to the repository root"},
+                    "start_line": {"type": "integer", "description": "Start line (1-based, inclusive), defaults to the beginning"},
+                    "end_line": {"type": "integer", "description": "End line (inclusive), defaults to the end of file"}
+                },
+                "required": ["path"]
+            }),
+        },
+        ToolSpec {
+            name: "grep",
+            description: "Search the repository with a regular expression. Use it to find call sites of a function or type.",
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "pattern": {"type": "string", "description": "Regular expression"},
+                    "path": {"type": "string", "description": "Optional: limit to a file or directory"},
+                    "context_lines": {"type": "integer", "description": "Optional: context lines around each match"}
+                },
+                "required": ["pattern"]
+            }),
+        },
+        ToolSpec {
+            name: "glob",
+            description: "Find files matching a glob pattern. Use it to locate related files.",
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "pattern": {"type": "string", "description": "Glob pattern (e.g. src/**/*.rs)"}
+                },
+                "required": ["pattern"]
+            }),
+        },
+        ToolSpec {
+            name: "show_base_file",
+            description: "Read the file as it exists on the base branch (the PR target branch). Use it to compare pre-change behavior.",
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "File path relative to the repository root"}
+                },
+                "required": ["path"]
+            }),
+        },
+    ];
+    if profile == crate::agent::ToolProfile::ReadWrite {
+        tools.push(ToolSpec {
+            name: "edit_file",
+            description: "Replace exact text in an existing file. old_string must match exactly once — include enough surrounding context to make it unique.",
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "File path relative to the repository root"},
+                    "old_string": {"type": "string", "description": "Exact text to replace (must occur exactly once in the file)"},
+                    "new_string": {"type": "string", "description": "Replacement text"}
+                },
+                "required": ["path", "old_string", "new_string"]
+            }),
+        });
+        tools.push(ToolSpec {
+            name: "write_file",
+            description: "Create a new file or overwrite an existing file with the given content. Prefer edit_file for targeted changes to existing files.",
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "File path relative to the repository root"},
+                    "content": {"type": "string", "description": "Full file content"}
+                },
+                "required": ["path", "content"]
+            }),
+        });
+    }
+    tools
+}
+
+/// Names of the read-only tools: the only menu a summarization run may have.
+pub fn readonly_specs() -> Vec<ToolSpec> {
+    specs(crate::agent::ToolProfile::ReadOnly)
+}
+
+fn arg_str(arguments: &serde_json::Value, key: &str) -> Result<String, String> {
+    arguments
+        .get(key)
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string)
+        .ok_or_else(|| format!("missing required string argument {key:?}"))
+}
+
+fn arg_opt_u64(arguments: &serde_json::Value, key: &str) -> Option<u64> {
+    arguments.get(key).and_then(serde_json::Value::as_u64)
+}
+
+fn arg_opt_str(arguments: &serde_json::Value, key: &str) -> Option<String> {
+    arguments
+        .get(key)
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string)
+}
+
+/// Execute one tool call by name. Errors are returned as text, never as a
+/// failure: a tool problem must not break the agentic loop (spec 04).
+pub async fn dispatch(name: &str, arguments: &serde_json::Value, shared: &ToolShared) -> String {
+    let arguments = if arguments.is_null() {
+        &serde_json::Value::Object(serde_json::Map::new())
+    } else {
+        arguments
+    };
+    match name {
+        "read_file" => match arg_str(arguments, "path") {
+            Ok(path) => {
+                read_file(
+                    shared,
+                    &path,
+                    arg_opt_u64(arguments, "start_line"),
+                    arg_opt_u64(arguments, "end_line"),
+                )
+                .await
+            }
+            Err(e) => e,
+        },
+        "grep" => match arg_str(arguments, "pattern") {
+            Ok(pattern) => {
+                let path = arg_opt_str(arguments, "path");
+                grep(
+                    shared,
+                    &pattern,
+                    path.as_deref(),
+                    arg_opt_u64(arguments, "context_lines").map(|v| v as u32),
+                )
+                .await
+            }
+            Err(e) => e,
+        },
+        "glob" => match arg_str(arguments, "pattern") {
+            Ok(pattern) => glob(shared, &pattern).await,
+            Err(e) => e,
+        },
+        "show_base_file" => match arg_str(arguments, "path") {
+            Ok(path) => show_base_file(shared, &path).await,
+            Err(e) => e,
+        },
+        "edit_file" => match (
+            arg_str(arguments, "path"),
+            arg_str(arguments, "old_string"),
+            arg_str(arguments, "new_string"),
+        ) {
+            (Ok(path), Ok(old), Ok(new)) => edit_file(shared, &path, &old, &new).await,
+            (Err(e), ..) | (_, Err(e), _) | (_, _, Err(e)) => e,
+        },
+        "write_file" => match (arg_str(arguments, "path"), arg_str(arguments, "content")) {
+            (Ok(path), Ok(content)) => write_file(shared, &path, &content).await,
+            (Err(e), _) | (_, Err(e)) => e,
+        },
+        other => format!("unknown tool: {other}"),
+    }
 }
 
 #[cfg(test)]

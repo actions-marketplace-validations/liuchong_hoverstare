@@ -44,6 +44,8 @@ pub struct Config {
     /// Model context window in tokens (spec 01). When set, it caps the diff
     /// budget so the prompt still fits the window.
     pub context_tokens: Option<u64>,
+    /// Context compaction settings (spec 13)
+    pub compaction: crate::agent::compaction::CompactionConfig,
     /// Output language (HOVERSTARE_LANGUAGE env > toml language > default en)
     pub language: crate::i18n::Lang,
     pub github_token: Option<SecretString>,
@@ -385,6 +387,30 @@ fn parse_effort(raw: Option<String>) -> anyhow::Result<Option<ReasoningEffort>> 
     }
 }
 
+fn parse_bool(raw: Option<String>) -> Option<anyhow::Result<bool>> {
+    raw.map(|v| match v.trim().to_ascii_lowercase().as_str() {
+        "true" | "1" | "yes" | "on" => Ok(true),
+        "false" | "0" | "no" | "off" => Ok(false),
+        other => bail!("invalid boolean: {other:?} (expected true|false)"),
+    })
+}
+
+fn parse_ratio(raw: Option<String>) -> Option<anyhow::Result<f64>> {
+    raw.map(|v| {
+        v.trim()
+            .parse::<f64>()
+            .with_context(|| format!("invalid ratio: {v:?}"))
+    })
+}
+
+fn parse_usize(raw: Option<String>) -> Option<anyhow::Result<usize>> {
+    raw.map(|v| {
+        v.trim()
+            .parse::<usize>()
+            .with_context(|| format!("invalid integer: {v:?}"))
+    })
+}
+
 /// File structure of `.github/hoverstare.toml` (all optional)
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -406,6 +432,10 @@ struct TomlConfig {
     thinking: Option<String>,
     reasoning_effort: Option<String>,
     context_tokens: Option<u64>,
+    compaction: Option<bool>,
+    compaction_threshold_ratio: Option<f64>,
+    compaction_keep_ratio: Option<f64>,
+    summary_max_chars: Option<usize>,
     language: Option<String>,
     permissions: Option<Permissions>,
 }
@@ -499,6 +529,26 @@ impl Config {
             None => None,
         };
 
+        // Context compaction (spec 13): env > toml > defaults.
+        let compaction = crate::agent::compaction::CompactionConfig {
+            enabled: parse_bool(env_or("HOVERSTARE_COMPACTION", None))
+                .transpose()?
+                .or(t.compaction)
+                .unwrap_or(true),
+            threshold_ratio: parse_ratio(env_or("HOVERSTARE_COMPACTION_THRESHOLD_RATIO", None))
+                .transpose()?
+                .or(t.compaction_threshold_ratio)
+                .unwrap_or(0.75),
+            keep_ratio: parse_ratio(env_or("HOVERSTARE_COMPACTION_KEEP_RATIO", None))
+                .transpose()?
+                .or(t.compaction_keep_ratio)
+                .unwrap_or(0.25),
+            summary_max_chars: parse_usize(env_or("HOVERSTARE_SUMMARY_MAX_CHARS", None))
+                .transpose()?
+                .or(t.summary_max_chars)
+                .unwrap_or(4_000),
+        };
+
         // Validation (spec 01)
         if model.trim().is_empty() {
             bail!("model must not be empty");
@@ -533,6 +583,23 @@ impl Config {
         };
         if max_tool_calls == 0 {
             bail!("max_tool_calls must be >= 1");
+        }
+        if !(compaction.keep_ratio > 0.0
+            && compaction.keep_ratio < compaction.threshold_ratio
+            && compaction.threshold_ratio < 1.0)
+        {
+            bail!(
+                "compaction ratios must satisfy 0 < compaction_keep_ratio < \
+                 compaction_threshold_ratio < 1 (got {} and {})",
+                compaction.keep_ratio,
+                compaction.threshold_ratio
+            );
+        }
+        if compaction.summary_max_chars < 200 {
+            bail!(
+                "summary_max_chars must be >= 200 (got {})",
+                compaction.summary_max_chars
+            );
         }
 
         // ignore: built-in + user-configured
@@ -613,6 +680,7 @@ impl Config {
             set_temperature: t.set_temperature.unwrap_or(true),
             reasoning,
             context_tokens,
+            compaction,
             language: crate::i18n::Lang::resolve(
                 std::env::var("HOVERSTARE_LANGUAGE").ok().as_deref(),
                 t.language.as_deref(),
@@ -728,6 +796,39 @@ mod tests {
         assert!(merge_str(r#"thinking = "on""#).is_err());
         assert!(merge_str(r#"reasoning_effort = "ultra""#).is_err());
         assert!(merge_str("context_tokens = 100").is_err());
+    }
+
+    #[test]
+    fn compaction_defaults_and_overrides() {
+        // spec 13 defaults
+        let c = merge_str("").unwrap();
+        assert!(c.compaction.enabled);
+        assert_eq!(c.compaction.threshold_ratio, 0.75);
+        assert_eq!(c.compaction.keep_ratio, 0.25);
+        assert_eq!(c.compaction.summary_max_chars, 4_000);
+        let c = merge_str(
+            r#"compaction = false
+               compaction_threshold_ratio = 0.5
+               compaction_keep_ratio = 0.1
+               summary_max_chars = 1_000"#,
+        )
+        .unwrap();
+        assert!(!c.compaction.enabled);
+        assert_eq!(c.compaction.threshold_ratio, 0.5);
+        assert_eq!(c.compaction.keep_ratio, 0.1);
+        assert_eq!(c.compaction.summary_max_chars, 1_000);
+    }
+
+    #[test]
+    fn compaction_invalid_values_rejected() {
+        // the keep share must leave room for the summary that replaces the rest
+        assert!(
+            merge_str("compaction_keep_ratio = 0.9\ncompaction_threshold_ratio = 0.5").is_err()
+        );
+        assert!(merge_str("compaction_keep_ratio = 0.0").is_err());
+        assert!(merge_str("compaction_threshold_ratio = 1.0").is_err());
+        assert!(merge_str("summary_max_chars = 10").is_err());
+        assert!(merge_str("compaction = \"maybe\"").is_err());
     }
 
     #[test]

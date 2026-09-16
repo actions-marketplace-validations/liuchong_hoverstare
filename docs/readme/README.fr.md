@@ -154,6 +154,10 @@ set_temperature = true                # false pour les endpoints n'acceptant que
 thinking = "enabled"
 reasoning_effort = "medium"
 context_tokens = 1000000
+compaction = true
+compaction_threshold_ratio = 0.75
+compaction_keep_ratio = 0.25
+summary_max_chars = 4000
 instructions = ""                     # focus de revue de l'équipe, injecté dans le prompt système
 ```
 

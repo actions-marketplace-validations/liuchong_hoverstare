@@ -54,9 +54,11 @@ src/
 ├── github.rs          # REST + GraphQL 客户端（spec 02）
 ├── diff.rs            # 容错 diff 解析、过滤、优先级截断（spec 03）
 ├── agent/
-│   ├── mod.rs         # AgentBackend trait + ToolProfile（审查永远只读）
-│   ├── rig_backend.rs # 唯一允许 use rig::* 的文件 + rig Tool 薄包装
-│   └── tools.rs       # 只读+写工具集（写仅 develop）+ 路径沙箱 + 预算 + 轨迹
+│   ├── mod.rs         # AgentBackend/ChatClient trait + ToolProfile（审查永远只读）
+│   ├── agent_loop.rs  # 自持 history 的 agentic 循环 + 阈值压缩 + 溢出恢复（spec 13）
+│   ├── compaction.rs  # 压缩计划/粗摘要/dump/摘要契约/溢出识别（框架无关，spec 13）
+│   ├── rig_backend.rs # 唯一允许 use rig::* 的文件：一次 provider 调用，不跑循环
+│   └── tools.rs       # 工具元数据+分发+只读/写工具集 + 路径沙箱 + 预算 + 轨迹
 ├── develop.rs         # develop 核心循环：agent 开发 → conventional commit（spec 11）
 ├── devagent.rs        # issue/PR 主线编排：讨论/计划/go/开发轮/merge（spec 11）
 ├── git.rs             # git 操作（分支/commit/push/fetch/checkout -B，错误脱敏）
@@ -88,17 +90,20 @@ crates/bugbot/         # 别名 crate：re-export + 同入口二进制（同步�
 8. **发布禁令**：**没有用户的主动要求，严禁任何形式的发布**——包括但不限于：
    打/删/移动 tag、创建 GitHub Release、`cargo publish`、Marketplace 上架、
    向任意 registry 推包。实现完成 ≠ 发布授权；发布前必须停下来等用户明确指令。
-9. **重试预算隔离**：agent 循环的任何重试都必须用全新的预算/状态对象
+9. **压缩契约**（spec 13）：system prompt 永不压缩；摘要只能替换对话前缀；切点必须
+   工具配对安全；摘要失败一律回落确定性 digest（压缩本身不允许失败）；溢出恢复
+   先落粗摘要再 dump 再精确摘要，同一请求只重试一次；摘要 run 用独立预算。
+10. **重试预算隔离**：agent 循环的任何重试都必须用全新的预算/状态对象
    （共享计数器会饿死后续重试——issue #9 两轮零改动的根因）。模型空输出、
    畸形响应是常态不是异常，循环必须容忍并重试（当前为 3 次尝试）。
-10. **workflow 表达式卫生**：`${{ }}` 表达式内禁止 `#` 注释（会成为表达式
+11. **workflow 表达式卫生**：`${{ }}` 表达式内禁止 `#` 注释（会成为表达式
     的一部分导致解析失败）；并发组在 **run 级先于 job if 生效**——bot 自己
     产生的评论/review 事件必须给 noop 组名或明确豁免，否则会取消正在跑的
     run（三类变体都踩过：普通评论、bot 评论、bot review）。
-11. **令牌职责分离**：身份（评论/API）永远走 App token；写操作（push/merge/
+12. **令牌职责分离**：身份（评论/API）永远走 App token；写操作（push/merge/
     删分支）走 PAT 类令牌或升了 contents:write 的 App token。`GITHUB_TOKEN`
     的 push 不触发 CI；squash merge 需要 contents:write。
-12. **bot 能力边界**：bot 不能执行代码，fmt/clippy/编译错误只能靠 CI 暴露——
+13. **bot 能力边界**：bot 不能执行代码，fmt/clippy/编译错误只能靠 CI 暴露——
     给 bot 反馈 CI 失败时必须附上具体错误文本（rustc/fmt diff），否则它会
     盲改；bot 偏离 spec（如自加 env 覆盖）时用指令纠正，不替它重写实现。
 
@@ -106,7 +111,7 @@ crates/bugbot/         # 别名 crate：re-export + 同入口二进制（同步�
 
 ```bash
 cargo build --workspace
-cargo test --workspace                          # 67 项（单元 + httpmock 合约）
+cargo test --workspace                          # 152 项（单元 + httpmock 合约）
 cargo fmt && cargo clippy --workspace --all-targets -- -D warnings
 ```
 

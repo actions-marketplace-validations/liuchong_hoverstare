@@ -87,6 +87,10 @@ fly deploy
 | `HOVERSTARE_THINKING` | | 思考模式开关（`enabled`/`disabled`，仅 OpenAI 兼容端点） |
 | `HOVERSTARE_REASONING_EFFORT` | | 思考强度（`none`/`minimal`/`low`/`medium`/`high`/`xhigh`/`max`） |
 | `HOVERSTARE_CONTEXT_TOKENS` | | 模型上下文窗口（token，如 DeepSeek `deepseek-flash` 为 `1000000`） |
+| `HOVERSTARE_COMPACTION` | | 上下文压缩开关（`true`/`false`，spec 13） |
+| `HOVERSTARE_COMPACTION_THRESHOLD_RATIO` | | 估算输入达到窗口的比例即压缩（默认 0.75） |
+| `HOVERSTARE_COMPACTION_KEEP_RATIO` | | 压缩后保留最近这段比例的窗口（默认 0.25） |
+| `HOVERSTARE_SUMMARY_MAX_CHARS` | | 模型摘要长度上限（默认 4000） |
 | `PORT` | | 监听端口（默认 8080） |
 | `HOVERSTARE_SERVE_MAX_JOBS` | | 并发任务上限（默认 4） |
 

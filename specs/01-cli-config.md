@@ -37,6 +37,9 @@ Commands:
 | env `HOVERSTARE_LANGUAGE` | 覆盖 toml `language`（输出语言，en/zh-CN/ru/fr/de/es） |
 | env `HOVERSTARE_THINKING` / `HOVERSTARE_REASONING_EFFORT` | 覆盖 toml 的思考模式配置 |
 | env `HOVERSTARE_CONTEXT_TOKENS` | 覆盖 toml `context_tokens`（模型上下文窗口） |
+| env `HOVERSTARE_COMPACTION` | 覆盖 toml `compaction`（`true`/`false`） |
+| env `HOVERSTARE_COMPACTION_THRESHOLD_RATIO` / `HOVERSTARE_COMPACTION_KEEP_RATIO` | 覆盖压缩阈值与保留比例 |
+| env `HOVERSTARE_SUMMARY_MAX_CHARS` | 覆盖模型摘要长度上限 |
 
 非 Actions 环境本地调试时，`--pr` + `GITHUB_REPOSITORY` + 两个 token 即可运行。
 
@@ -90,8 +93,17 @@ reasoning_effort = "medium"
 
 # 模型上下文窗口（token）。设置后用于推导 diff 预算上限：diff 文本按 4 字节/token
 # 估算、最多占窗口的一半，超过时把 max_diff_kb 收窄到该上限并 warn。
+# 同时它也是上下文压缩（spec 13）的窗口；未设置时压缩用 131072。
 # DeepSeek deepseek-flash 为 1M。留空 = 不做推导（行为同旧版本）。
 context_tokens = 1000000
+
+# 上下文压缩（spec 13）。compaction = false 则完全不压缩（溢出即失败）。
+compaction = true
+# 估算输入达到窗口的这个比例就开始阈值压缩；压缩后保留最近这段比例的窗口逐字不变。
+compaction_threshold_ratio = 0.75
+compaction_keep_ratio = 0.25
+# 模型写的摘要长度上限（确定性摘要另受 durable 上限约束）。
+summary_max_chars = 4000
 
 # 输出语言：PR review 正文/行内评论/help/status check 描述/主要日志/LLM 输出语言。
 # 支持 en / zh-CN / ru / fr / de / es（与 README 语言集一致）。
@@ -113,6 +125,7 @@ CLI flag > 环境变量 > `.github/hoverstare.toml` > 内置默认值
 - `severity_threshold` 必须是枚举值之一
 - `thinking` 必须是 `enabled` / `disabled`；`reasoning_effort` 必须是枚举值之一
 - `context_tokens` 设置时必须 `>= 4096`
+- 压缩参数必须满足 `0 < compaction_keep_ratio < compaction_threshold_ratio < 1`；`summary_max_chars >= 200`
 - `ignore` 的 glob 必须可编译
 - `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` 至少一个存在
 
