@@ -484,7 +484,14 @@ async fn pr_dev_round(
     git.fetch("devpush", &format!("{base}:refs/remotes/devpush/{base}"))
         .await?;
     let head_before = git.run(&["rev-parse", "HEAD"]).await?;
-    match git.merge_ref(&format!("refs/remotes/devpush/{base}")).await {
+    match git
+        .merge_ref(
+            &format!("refs/remotes/devpush/{base}"),
+            crate::develop::AUTHOR_NAME,
+            crate::develop::AUTHOR_EMAIL,
+        )
+        .await
+    {
         Ok(()) => {
             if git.run(&["rev-parse", "HEAD"]).await? != head_before {
                 git.push("devpush", branch).await?;

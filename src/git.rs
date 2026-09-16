@@ -114,9 +114,28 @@ impl GitRepo {
     /// at all — no CI, no failure, no feedback. So a round syncs before it
     /// develops: on conflict the merge is aborted (the tree is left exactly as
     /// the human will find it) and reported as [`GitError::Conflict`].
-    pub async fn merge_ref(&self, reference: &str) -> Result<(), GitError> {
+    ///
+    /// The merge commit carries the same identity as the round's own commits:
+    /// a CI runner has no global git identity, and without one git refuses to
+    /// create the merge commit at all.
+    pub async fn merge_ref(
+        &self,
+        reference: &str,
+        name: &str,
+        email: &str,
+    ) -> Result<(), GitError> {
+        let identity_name = format!("user.name={name}");
+        let identity_email = format!("user.email={email}");
         let out = tokio::process::Command::new("git")
-            .args(["merge", "--no-edit", reference])
+            .args([
+                "-c",
+                &identity_name,
+                "-c",
+                &identity_email,
+                "merge",
+                "--no-edit",
+                reference,
+            ])
             .current_dir(&self.root)
             .output()
             .await
@@ -284,7 +303,9 @@ mod tests {
         repo.add_all().await.unwrap();
         repo.commit("base work", "t", "t@t").await.unwrap();
         repo.run(&["checkout", "-q", "dev"]).await.unwrap();
-        repo.merge_ref("master").await.expect("clean merge");
+        repo.merge_ref("master", "t", "t@t")
+            .await
+            .expect("clean merge");
         assert!(repo.root().join("base.txt").exists());
 
         // A conflicting branch is aborted, and the tree still holds the round's
@@ -297,7 +318,10 @@ mod tests {
         repo.add_all().await.unwrap();
         repo.commit("master edits a", "t", "t@t").await.unwrap();
         repo.run(&["checkout", "-q", "dev"]).await.unwrap();
-        let error = repo.merge_ref("master").await.expect_err("conflict");
+        let error = repo
+            .merge_ref("master", "t", "t@t")
+            .await
+            .expect_err("conflict");
         assert!(matches!(error, GitError::Conflict(_)), "{error:?}");
         assert!(!repo.has_conflicts().await.unwrap());
         assert_eq!(
