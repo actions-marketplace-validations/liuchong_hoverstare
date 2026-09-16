@@ -90,9 +90,11 @@ crates/bugbot/         # 别名 crate：re-export + 同入口二进制（同步�
 8. **发布禁令**：**没有用户的主动要求，严禁任何形式的发布**——包括但不限于：
    打/删/移动 tag、创建 GitHub Release、`cargo publish`、Marketplace 上架、
    向任意 registry 推包。实现完成 ≠ 发布授权；发布前必须停下来等用户明确指令。
-9. **压缩契约**（spec 13）：system prompt 永不压缩；摘要只能替换对话前缀；切点必须
-   工具配对安全；摘要失败一律回落确定性 digest（压缩本身不允许失败）；溢出恢复
-   先落粗摘要再 dump 再精确摘要，同一请求只重试一次；摘要 run 用独立预算。
+9. **压缩契约**（spec 13）：system prompt 永不压缩；摘要只能替换对话前缀；**本轮任务提示
+   必须钉住**（压缩不许丢掉正在处理的 diff/issue）；切点必须工具配对安全；摘要失败一律
+   回落确定性 digest（压缩本身不允许失败）；溢出恢复先落粗摘要再 dump 再精确摘要，
+   同一请求只重试一次；摘要 run 用独立预算；**确定性工作台账**（实际读过/改过的文件、
+   搜索式、调用次数）随每次压缩累积并追加在摘要后，模型散文不得代替它。
 10. **重试预算隔离**：agent 循环的任何重试都必须用全新的预算/状态对象
    （共享计数器会饿死后续重试——issue #9 两轮零改动的根因）。模型空输出、
    畸形响应是常态不是异常，循环必须容忍并重试（当前为 3 次尝试）。
@@ -111,7 +113,7 @@ crates/bugbot/         # 别名 crate：re-export + 同入口二进制（同步�
 
 ```bash
 cargo build --workspace
-cargo test --workspace                          # 156 项（单元 + httpmock 合约）
+cargo test --workspace                          # 162 项（单元 + httpmock 合约）
 cargo fmt && cargo clippy --workspace --all-targets -- -D warnings
 ```
 

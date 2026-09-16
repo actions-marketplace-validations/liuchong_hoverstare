@@ -46,6 +46,8 @@ pub struct Config {
     pub context_tokens: Option<u64>,
     /// Context compaction settings (spec 13)
     pub compaction: crate::agent::compaction::CompactionConfig,
+    /// Absolute bound on model calls in one run (0 = derive from the tool budget)
+    pub max_rounds: u32,
     /// Output language (HOVERSTARE_LANGUAGE env > toml language > default en)
     pub language: crate::i18n::Lang,
     pub github_token: Option<SecretString>,
@@ -403,6 +405,14 @@ fn parse_ratio(raw: Option<String>) -> Option<anyhow::Result<f64>> {
     })
 }
 
+fn parse_u32(raw: Option<String>) -> Option<anyhow::Result<u32>> {
+    raw.map(|v| {
+        v.trim()
+            .parse::<u32>()
+            .with_context(|| format!("invalid integer: {v:?}"))
+    })
+}
+
 fn parse_usize(raw: Option<String>) -> Option<anyhow::Result<usize>> {
     raw.map(|v| {
         v.trim()
@@ -433,6 +443,7 @@ struct TomlConfig {
     reasoning_effort: Option<String>,
     context_tokens: Option<u64>,
     compaction: Option<bool>,
+    max_rounds: Option<u32>,
     compaction_threshold_ratio: Option<f64>,
     compaction_keep_ratio: Option<f64>,
     summary_max_chars: Option<usize>,
@@ -548,6 +559,11 @@ impl Config {
                 .or(t.summary_max_chars)
                 .unwrap_or(4_000),
         };
+
+        let max_rounds = parse_u32(env_or("HOVERSTARE_MAX_ROUNDS", None))
+            .transpose()?
+            .or(t.max_rounds)
+            .unwrap_or(0);
 
         // Validation (spec 01)
         if model.trim().is_empty() {
@@ -681,6 +697,7 @@ impl Config {
             reasoning,
             context_tokens,
             compaction,
+            max_rounds,
             language: crate::i18n::Lang::resolve(
                 std::env::var("HOVERSTARE_LANGUAGE").ok().as_deref(),
                 t.language.as_deref(),
@@ -817,6 +834,15 @@ mod tests {
         assert_eq!(c.compaction.threshold_ratio, 0.5);
         assert_eq!(c.compaction.keep_ratio, 0.1);
         assert_eq!(c.compaction.summary_max_chars, 1_000);
+    }
+
+    #[test]
+    fn max_rounds_defaults_to_the_tool_budget_derivation() {
+        // 0 means "derive from the tool budget"; a set value is an absolute bound.
+        let c = merge_str("").unwrap();
+        assert_eq!(c.max_rounds, 0);
+        let c = merge_str("max_rounds = 40").unwrap();
+        assert_eq!(c.max_rounds, 40);
     }
 
     #[test]

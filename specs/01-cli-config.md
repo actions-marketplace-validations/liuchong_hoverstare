@@ -40,6 +40,7 @@ Commands:
 | env `HOVERSTARE_COMPACTION` | 覆盖 toml `compaction`（`true`/`false`） |
 | env `HOVERSTARE_COMPACTION_THRESHOLD_RATIO` / `HOVERSTARE_COMPACTION_KEEP_RATIO` | 覆盖压缩阈值与保留比例 |
 | env `HOVERSTARE_SUMMARY_MAX_CHARS` | 覆盖模型摘要长度上限 |
+| env `HOVERSTARE_MAX_ROUNDS` | 覆盖单次 run 的模型调用轮数上限（0 = 由工具预算推导） |
 
 非 Actions 环境本地调试时，`--pr` + `GITHUB_REPOSITORY` + 两个 token 即可运行。
 
@@ -104,6 +105,9 @@ compaction_threshold_ratio = 0.75
 compaction_keep_ratio = 0.25
 # 模型写的摘要长度上限（确定性摘要另受 durable 上限约束）。
 summary_max_chars = 4000
+# 单次 run 的模型调用轮数上限；0 = 由 max_tool_calls 推导（+2）。
+# 与 max_tool_calls（工具调用预算）独立，长运行时服务可以单独提高轮数。
+max_rounds = 0
 
 # 输出语言：PR review 正文/行内评论/help/status check 描述/主要日志/LLM 输出语言。
 # 支持 en / zh-CN / ru / fr / de / es（与 README 语言集一致）。

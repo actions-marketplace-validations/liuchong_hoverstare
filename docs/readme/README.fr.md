@@ -158,6 +158,7 @@ compaction = true
 compaction_threshold_ratio = 0.75
 compaction_keep_ratio = 0.25
 summary_max_chars = 4000
+max_rounds = 0
 instructions = ""                     # focus de revue de l'équipe, injecté dans le prompt système
 ```
 

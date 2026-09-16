@@ -18,7 +18,7 @@ use std::sync::Arc;
 
 use tracing::{debug, info, warn};
 
-use crate::agent::compaction::{self, CompactionConfig, Plan};
+use crate::agent::compaction::{self, CompactionConfig, Plan, WorkLedger};
 use crate::agent::tools::{self, ToolShared};
 use crate::agent::{
     AgentBackend, AgentError, ChatCall, ChatClient, ChatReply, ConversationItem, ReviewRequest,
@@ -27,6 +27,9 @@ use crate::agent::{
 
 /// Output limit per model call.
 const MAX_OUTPUT_TOKENS: u64 = 8192;
+
+/// Hard stop on model calls when a caller configured no round limit.
+const DEFAULT_MAX_ROUNDS_MARGIN: u32 = 2;
 
 /// Share of the window a summarization request may take (spec 13).
 const SUMMARY_INPUT_RATIO: f64 = 0.5;
@@ -59,6 +62,10 @@ pub struct AgentLoop {
     compaction: CompactionConfig,
     /// model window in tokens
     window: u64,
+    /// Absolute bound on model calls in one run; 0 derives it from the tool
+    /// budget. A long-running review service raises it without raising the
+    /// tool budget, so a run can take more turns without doing more work.
+    max_rounds: u32,
 }
 
 impl AgentLoop {
@@ -67,6 +74,22 @@ impl AgentLoop {
             client,
             compaction,
             window,
+            max_rounds: 0,
+        }
+    }
+
+    /// Bound the number of model calls in one run (0 = derive from the tool budget).
+    pub fn with_max_rounds(mut self, max_rounds: u32) -> Self {
+        self.max_rounds = max_rounds;
+        self
+    }
+
+    /// The effective round bound for a run with `tool_budget` tool calls.
+    fn round_budget(&self, tool_budget: u32) -> u32 {
+        if self.max_rounds == 0 {
+            tool_budget.saturating_add(DEFAULT_MAX_ROUNDS_MARGIN).max(2)
+        } else {
+            self.max_rounds.max(1)
         }
     }
 
@@ -270,6 +293,12 @@ impl AgentLoop {
             let mut recovered = false;
             let mut just_recovered = false;
             let mut dump: Option<PathBuf> = None;
+            // Deterministic record of the work this run has done. It is what
+            // keeps a compacted conversation able to continue: prose may forget
+            // a path, the ledger cannot.
+            let mut ledger = WorkLedger::from_items(&items);
+            let mut rounds = 0u32;
+            let max_rounds = self.round_budget(req.budget.max_tool_calls);
             // Signature -> result of the last execution. A model that repeats a
             // call whose result cannot change would otherwise spend the budget
             // re-reading the same nothing.
@@ -320,13 +349,15 @@ impl AgentLoop {
                                 digest
                             }
                         };
+                        let summary = compaction::with_ledger(&summary, &ledger);
                         Self::apply_plan(&mut items, plan, &summary);
                     }
                 }
 
                 // The last calls must produce an answer, so no tools are
                 // offered once the tool budget is spent.
-                let menu = if executed >= req.budget.max_tool_calls {
+                rounds += 1;
+                let menu = if executed >= req.budget.max_tool_calls || rounds >= max_rounds {
                     Vec::new()
                 } else {
                     specs.clone()
@@ -346,11 +377,35 @@ impl AgentLoop {
                         if reply.tool_calls.is_empty() {
                             break Ok((reply.text, trace, usage));
                         }
+                        if menu.is_empty() {
+                            // The budget is spent, so no tool was offered. A
+                            // model that still asks for one is told to answer
+                            // instead of being handed an unadvertised call.
+                            items.push(ConversationItem::Assistant {
+                                text: reply.text.clone(),
+                                tool_calls: reply.tool_calls.clone(),
+                            });
+                            for call in &reply.tool_calls {
+                                items.push(ConversationItem::ToolResult {
+                                    call_id: call.id.clone(),
+                                    text: "no tools are available: the tool or round budget is \
+                                           spent. Answer with the information you already have."
+                                        .to_string(),
+                                });
+                            }
+                            if rounds >= max_rounds {
+                                break Err(AgentError::Backend(format!(
+                                    "the run exceeded its {max_rounds} round budget without an answer"
+                                )));
+                            }
+                            continue;
+                        }
                         items.push(ConversationItem::Assistant {
                             text: reply.text.clone(),
                             tool_calls: reply.tool_calls.clone(),
                         });
                         for call in &reply.tool_calls {
+                            ledger.observe(call);
                             let Some(shared) = shared.clone() else {
                                 items.push(ConversationItem::ToolResult {
                                     call_id: call.id.clone(),
@@ -422,6 +477,7 @@ impl AgentLoop {
                             compaction::digest(previous.as_deref(), &dropped, DIGEST_MAX_CHARS);
                         // Crude first: from here the retry cannot be refused for
                         // the same reason, whatever the precise stage does next.
+                        let digest = compaction::with_ledger(&digest, &ledger);
                         Self::apply_plan(&mut items, plan, &digest);
                         let relative = format!(
                             ".hoverstare/context-{}.md",
@@ -461,6 +517,7 @@ impl AgentLoop {
                                 if let Some(ConversationItem::User { text }) =
                                     items.get_mut(plan.start)
                                 {
+                                    let precise = compaction::with_ledger(&precise, &ledger);
                                     *text = format!("{SUMMARY_PREFIX}\n{precise}");
                                 }
                                 info!("context overflow: precise summary written from the dump");
@@ -923,6 +980,75 @@ mod tests {
             .map(|entries| entries.flatten().collect())
             .unwrap_or_default();
         assert!(leftovers.is_empty(), "the dump is removed after the run");
+    }
+
+    #[tokio::test]
+    async fn a_compaction_carries_the_deterministic_work_ledger() {
+        let (_dir, shared) = two_file_workspace();
+        let client = ScriptedClient::new(vec![scripted(|index, _call| match index {
+            0 => Ok(tool_reply(
+                "1",
+                "read_file",
+                serde_json::json!({"path": "a.rs"}),
+            )),
+            1 => Ok(tool_reply(
+                "2",
+                "read_file",
+                serde_json::json!({"path": "b.rs"}),
+            )),
+            _ => Ok(reply("final")),
+        })]);
+        let run = loop_with(client.clone(), 400)
+            .review(request(Some(shared), 8))
+            .await
+            .unwrap();
+        assert_eq!(run.raw_output, "final");
+        let after = client
+            .calls()
+            .iter()
+            .skip_while(|call| !is_summarizer(call))
+            .find(|call| !is_summarizer(call))
+            .cloned()
+            .expect("the compacted request");
+        let summary = after
+            .messages
+            .iter()
+            .find_map(|item| match item {
+                ConversationItem::User { text }
+                    if text.starts_with("[Earlier conversation summary]") =>
+                {
+                    Some(text.clone())
+                }
+                _ => None,
+            })
+            .expect("the summary message");
+        // Whatever the model's prose said, the paths it actually read are there.
+        assert!(summary.contains("[deterministic work ledger]"));
+        assert!(summary.contains("files_read: a.rs"));
+        assert!(summary.contains("tool_calls:"));
+    }
+
+    #[tokio::test]
+    async fn rounds_are_bounded_independently_of_the_tool_budget() {
+        let (_dir, shared) = two_file_workspace();
+        // The model calls tools forever; the round bound withdraws them and the
+        // run still answers.
+        let client = ScriptedClient::new(vec![scripted(|_index, _call| {
+            Ok(tool_reply(
+                "1",
+                "read_file",
+                serde_json::json!({"path": "a.rs"}),
+            ))
+        })]);
+        let result = loop_with(client.clone(), 100_000)
+            .with_max_rounds(3)
+            .review(request(Some(shared), 50))
+            .await;
+        // Every model answer is a tool call, so the run ends on the round bound
+        // instead of hanging: bounded, and it says why.
+        assert!(
+            matches!(result, Err(AgentError::Backend(message)) if message.contains("round budget"))
+        );
     }
 
     #[tokio::test]

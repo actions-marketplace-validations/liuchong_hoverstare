@@ -145,6 +145,7 @@ compaction = true
 compaction_threshold_ratio = 0.75
 compaction_keep_ratio = 0.25
 summary_max_chars = 4000
+max_rounds = 0
 instructions = ""                     # 团队特定关注点，注入系统提示
 ```
 

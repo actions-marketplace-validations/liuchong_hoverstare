@@ -91,6 +91,7 @@ fly deploy
 | `HOVERSTARE_COMPACTION_THRESHOLD_RATIO` | | 估算输入达到窗口的比例即压缩（默认 0.75） |
 | `HOVERSTARE_COMPACTION_KEEP_RATIO` | | 压缩后保留最近这段比例的窗口（默认 0.25） |
 | `HOVERSTARE_SUMMARY_MAX_CHARS` | | 模型摘要长度上限（默认 4000） |
+| `HOVERSTARE_MAX_ROUNDS` | | 单次 run 模型调用轮数上限（0 = 由工具预算推导） |
 | `PORT` | | 监听端口（默认 8080） |
 | `HOVERSTARE_SERVE_MAX_JOBS` | | 并发任务上限（默认 4） |
 

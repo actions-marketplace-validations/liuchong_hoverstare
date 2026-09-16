@@ -35,6 +35,208 @@ pub const SUMMARY_SECTIONS: &[&str] = &[
     "Critical Context",
 ];
 
+/// Deterministic ledger of the work a run has actually done (spec 13).
+///
+/// A model-written summary is prose: it may forget a path, or state one that
+/// was never read. The ledger is derived from the tool calls themselves, so it
+/// cannot be invented, and it is carried across every compaction. A later
+/// compaction receives it and adds to it instead of starting over.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct WorkLedger {
+    pub files_read: Vec<String>,
+    pub files_modified: Vec<String>,
+    pub searches: Vec<String>,
+    pub globs: Vec<String>,
+    pub tool_calls: u32,
+}
+
+/// Bounds for one ledger, so a long run cannot turn the carried state into a
+/// second context problem.
+const LEDGER_MAX_FILES: usize = 40;
+const LEDGER_MAX_SEARCHES: usize = 12;
+const LEDGER_VALUE_MAX_CHARS: usize = 160;
+const LEDGER_BEGIN: &str = "[deterministic work ledger]";
+const LEDGER_END: &str = "[/deterministic work ledger]";
+
+fn ledger_push(list: &mut Vec<String>, value: String, limit: usize) {
+    let value = if value.chars().count() > LEDGER_VALUE_MAX_CHARS {
+        value
+            .chars()
+            .take(LEDGER_VALUE_MAX_CHARS)
+            .collect::<String>()
+    } else {
+        value
+    };
+    if value.trim().is_empty() || list.iter().any(|existing| existing == &value) {
+        return;
+    }
+    if list.len() < limit {
+        list.push(value);
+    }
+}
+
+impl WorkLedger {
+    /// Record one tool call.
+    pub fn observe(&mut self, call: &crate::agent::ToolCall) {
+        self.tool_calls += 1;
+        let path = call
+            .arguments
+            .get("path")
+            .and_then(serde_json::Value::as_str);
+        match call.name.as_str() {
+            "read_file" | "show_base_file" => {
+                if let Some(path) = path {
+                    ledger_push(&mut self.files_read, path.to_string(), LEDGER_MAX_FILES);
+                }
+            }
+            "edit_file" | "write_file" => {
+                if let Some(path) = path {
+                    ledger_push(&mut self.files_modified, path.to_string(), LEDGER_MAX_FILES);
+                }
+            }
+            "grep" => {
+                if let Some(pattern) = call
+                    .arguments
+                    .get("pattern")
+                    .and_then(serde_json::Value::as_str)
+                {
+                    ledger_push(&mut self.searches, pattern.to_string(), LEDGER_MAX_SEARCHES);
+                }
+            }
+            "glob" => {
+                if let Some(pattern) = call
+                    .arguments
+                    .get("pattern")
+                    .and_then(serde_json::Value::as_str)
+                {
+                    ledger_push(&mut self.globs, pattern.to_string(), LEDGER_MAX_SEARCHES);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Merge another ledger into this one, keeping the first occurrence order.
+    pub fn merge(&mut self, other: &WorkLedger) {
+        for path in &other.files_read {
+            ledger_push(&mut self.files_read, path.clone(), LEDGER_MAX_FILES);
+        }
+        for path in &other.files_modified {
+            ledger_push(&mut self.files_modified, path.clone(), LEDGER_MAX_FILES);
+        }
+        for pattern in &other.searches {
+            ledger_push(&mut self.searches, pattern.clone(), LEDGER_MAX_SEARCHES);
+        }
+        for pattern in &other.globs {
+            ledger_push(&mut self.globs, pattern.clone(), LEDGER_MAX_SEARCHES);
+        }
+        self.tool_calls = self.tool_calls.max(other.tool_calls);
+    }
+
+    /// Derive a ledger from the tool calls carried by `items`.
+    pub fn from_items(items: &[ConversationItem]) -> WorkLedger {
+        let mut ledger = WorkLedger::default();
+        for item in items {
+            if let ConversationItem::Assistant { tool_calls, .. } = item {
+                for call in tool_calls {
+                    ledger.observe(call);
+                }
+            }
+        }
+        ledger
+    }
+
+    /// Read a ledger back out of a summary text, if it carries one.
+    pub fn parse(text: &str) -> Option<WorkLedger> {
+        let start = text.find(LEDGER_BEGIN)?;
+        let rest = &text[start + LEDGER_BEGIN.len()..];
+        let end = rest.find(LEDGER_END)?;
+        let mut ledger = WorkLedger::default();
+        for line in rest[..end].lines() {
+            let Some((key, value)) = line.split_once(':') else {
+                continue;
+            };
+            let values = value
+                .split(',')
+                .map(str::trim)
+                .filter(|entry| !entry.is_empty() && *entry != "none");
+            match key.trim() {
+                "files_read" => values.for_each(|entry| {
+                    ledger_push(&mut ledger.files_read, entry.to_string(), LEDGER_MAX_FILES)
+                }),
+                "files_modified" => values.for_each(|entry| {
+                    ledger_push(
+                        &mut ledger.files_modified,
+                        entry.to_string(),
+                        LEDGER_MAX_FILES,
+                    )
+                }),
+                "searches" => values.for_each(|entry| {
+                    ledger_push(&mut ledger.searches, entry.to_string(), LEDGER_MAX_SEARCHES)
+                }),
+                "globs" => values.for_each(|entry| {
+                    ledger_push(&mut ledger.globs, entry.to_string(), LEDGER_MAX_SEARCHES)
+                }),
+                "tool_calls" => {
+                    if let Ok(count) = value.trim().parse::<u32>() {
+                        ledger.tool_calls = ledger.tool_calls.max(count);
+                    }
+                }
+                _ => {}
+            }
+        }
+        Some(ledger)
+    }
+
+    /// Whether the ledger has anything worth carrying.
+    pub fn is_empty(&self) -> bool {
+        self.files_read.is_empty()
+            && self.files_modified.is_empty()
+            && self.searches.is_empty()
+            && self.globs.is_empty()
+            && self.tool_calls == 0
+    }
+
+    /// Render the ledger as the text block a summary carries.
+    pub fn render(&self) -> String {
+        let join = |values: &[String]| {
+            if values.is_empty() {
+                "none".to_string()
+            } else {
+                values.join(", ")
+            }
+        };
+        format!(
+            "{LEDGER_BEGIN}\n\
+             files_read: {}\n\
+             files_modified: {}\n\
+             searches: {}\n\
+             globs: {}\n\
+             tool_calls: {}\n\
+             {LEDGER_END}",
+            join(&self.files_read),
+            join(&self.files_modified),
+            join(&self.searches),
+            join(&self.globs),
+            self.tool_calls
+        )
+    }
+}
+
+/// Append the ledger to a summary text, replacing any ledger it already carries.
+pub fn with_ledger(summary: &str, ledger: &WorkLedger) -> String {
+    let mut text = summary.to_string();
+    if let (Some(start), Some(end)) = (text.find(LEDGER_BEGIN), text.find(LEDGER_END)) {
+        let end = end + LEDGER_END.len();
+        text.replace_range(start..end, "");
+        text = text.trim_end().to_string();
+    }
+    if ledger.is_empty() {
+        return text;
+    }
+    format!("{text}\n\n{}", ledger.render())
+}
+
 /// Compaction settings (spec 01).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CompactionConfig {
@@ -588,6 +790,95 @@ mod tests {
         assert!(text.contains("[user]\nhello"));
         assert!(text.contains("[tool calls]\n- read_file"));
         assert!(text.contains("[tool result 1]\nfile body"));
+    }
+
+    fn call_to(name: &str, arguments: serde_json::Value) -> crate::agent::ToolCall {
+        crate::agent::ToolCall {
+            id: "c".to_string(),
+            name: name.to_string(),
+            arguments,
+        }
+    }
+
+    #[test]
+    fn the_ledger_records_what_the_run_did_not_what_it_claimed() {
+        let mut ledger = WorkLedger::default();
+        ledger.observe(&call_to(
+            "read_file",
+            serde_json::json!({"path": "src/a.rs"}),
+        ));
+        ledger.observe(&call_to(
+            "read_file",
+            serde_json::json!({"path": "src/a.rs"}),
+        ));
+        ledger.observe(&call_to(
+            "show_base_file",
+            serde_json::json!({"path": "src/b.rs"}),
+        ));
+        ledger.observe(&call_to(
+            "edit_file",
+            serde_json::json!({"path": "src/c.rs", "old_string": "x", "new_string": "y"}),
+        ));
+        ledger.observe(&call_to("grep", serde_json::json!({"pattern": "fn main"})));
+        ledger.observe(&call_to("glob", serde_json::json!({"pattern": "**/*.rs"})));
+        ledger.observe(&call_to("read_file", serde_json::json!({})));
+        assert_eq!(ledger.files_read, vec!["src/a.rs", "src/b.rs"]);
+        assert_eq!(ledger.files_modified, vec!["src/c.rs"]);
+        assert_eq!(ledger.searches, vec!["fn main"]);
+        assert_eq!(ledger.globs, vec!["**/*.rs"]);
+        assert_eq!(ledger.tool_calls, 7);
+    }
+
+    #[test]
+    fn the_ledger_round_trips_and_accumulates_across_compactions() {
+        let mut first = WorkLedger::default();
+        first.observe(&call_to(
+            "read_file",
+            serde_json::json!({"path": "src/a.rs"}),
+        ));
+        let summary = with_ledger("## Goal\nship it", &first);
+        assert!(summary.contains("[deterministic work ledger]"));
+        let parsed = WorkLedger::parse(&summary).expect("ledger");
+        assert_eq!(parsed.files_read, vec!["src/a.rs"]);
+
+        // A later compaction absorbs the carried ledger and adds to it.
+        let mut second = WorkLedger::from_items(&[ConversationItem::Assistant {
+            text: String::new(),
+            tool_calls: vec![call_to(
+                "read_file",
+                serde_json::json!({"path": "src/b.rs"}),
+            )],
+        }]);
+        second.merge(&parsed);
+        let merged = with_ledger("## Goal\nship it again", &second);
+        assert_eq!(
+            WorkLedger::parse(&merged).expect("ledger").files_read,
+            vec!["src/b.rs", "src/a.rs"]
+        );
+        // Re-rendering never stacks two blocks.
+        let rendered = with_ledger(&merged, &second);
+        assert_eq!(rendered.matches("[deterministic work ledger]").count(), 1);
+        assert_eq!(rendered.matches("[/deterministic work ledger]").count(), 1);
+    }
+
+    #[test]
+    fn the_ledger_stays_bounded() {
+        let mut ledger = WorkLedger::default();
+        for index in 0..100 {
+            ledger.observe(&call_to(
+                "read_file",
+                serde_json::json!({ "path": format!("src/file-{index}.rs") }),
+            ));
+        }
+        assert_eq!(ledger.files_read.len(), LEDGER_MAX_FILES);
+        let rendered = ledger.render();
+        assert!(rendered.len() < 4_000, "the carried state stays small");
+        assert!(WorkLedger::default().is_empty());
+        // An empty ledger adds nothing to a summary.
+        assert_eq!(
+            with_ledger("## Goal\nx", &WorkLedger::default()),
+            "## Goal\nx"
+        );
     }
 
     #[test]
