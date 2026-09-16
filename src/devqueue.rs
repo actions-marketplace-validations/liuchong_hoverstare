@@ -512,17 +512,47 @@ pub fn self_trigger(round: u32, max_rounds: u32, outcome: Outcome, queue: &Queue
     outcome == Outcome::Ok && round < max_rounds && !queue.ordered().is_empty()
 }
 
-/// One-line queue status appended to every round report.
-pub fn summary_line(queue: &QueueState) -> String {
+/// The item currently in flight (`ItemState::Running`), if any.
+pub fn running(queue: &QueueState) -> Option<&Item> {
+    queue.items.iter().find(|i| i.state == ItemState::Running)
+}
+
+/// Human-readable label of one queued item: `#<src> <first-line snippet>`, falling
+/// back to the id alone when the source comment's text is no longer readable.
+pub fn item_label(comments: &[IssueComment], src: u64) -> String {
+    match instruction(comments, src) {
+        Some(text) => format!("#{src} {}", snippet(&text, 80)),
+        None => format!("#{src}"),
+    }
+}
+
+/// One-line queue status appended to every round report. When an item is in
+/// flight the line names it (`正在跑：#<src> <first line>`), so a human can tell
+/// *which* task runs and not just how many.
+pub fn summary_line(queue: &QueueState, comments: &[IssueComment]) -> String {
     let pending = count(queue, ItemState::Pending);
-    let running = count(queue, ItemState::Running);
+    let running_count = count(queue, ItemState::Running);
     let failed = count(queue, ItemState::Failed);
-    let next = queue
-        .next()
-        .map(|i| format!("；下一轮 #{}", i.src))
-        .unwrap_or_default();
+    let tail = match running(queue) {
+        Some(item) => format!("；▶︎ 正在跑：{}", item_label(comments, item.src)),
+        None => queue
+            .next()
+            .map(|i| format!("；下一轮 #{}", i.src))
+            .unwrap_or_default(),
+    };
     format!(
-        "📋 队列：{pending} 待执行 / {running} 进行中 / {failed} 失败（未完成上限 {MAX_ITEMS} 条）{next}"
+        "📋 队列：{pending} 待执行 / {running_count} 进行中 / {failed} 失败（未完成上限 {MAX_ITEMS} 条）{tail}"
+    )
+}
+
+/// Round-report note: the item this round executed (id + snippet), then the queue
+/// status. The item left `Running` when the round finished, so the report names
+/// it explicitly instead of relying on `summary_line` to still find it.
+pub fn round_note(queue: &QueueState, comments: &[IssueComment], src: u64) -> String {
+    format!(
+        "▶︎ 本轮执行 {}\n\n{}",
+        item_label(comments, src),
+        summary_line(queue, comments)
     )
 }
 
@@ -537,12 +567,17 @@ pub fn checklist(queue: &QueueState, comments: &[IssueComment]) -> String {
         let text = instruction(comments, item.src)
             .map(|t| snippet(&t, 80))
             .unwrap_or_else(|| "（原始评论不可见）".to_string());
+        let kind = if item.state == ItemState::Running {
+            format!("{}（进行中）", item.kind.label())
+        } else {
+            item.kind.label().to_string()
+        };
         let arrow = if next == Some(item.src) { " →" } else { "" };
         out.push_str(&format!(
             "- {} #{} {}：{}{}\n",
             item.state.checkbox(),
             item.src,
-            item.kind.label(),
+            kind,
             text,
             arrow
         ));
@@ -882,18 +917,61 @@ mod tests {
         queue.set_state(11, ItemState::Running);
         let out = checklist(&queue, &comments);
         assert!(out.contains("[~] #11"), "{out}");
+        assert!(out.contains("（进行中）"), "{out}");
         assert!(out.contains("[ ] #12"), "{out}");
         assert!(out.contains("add tests"), "{out}");
         assert!(out.contains("update the docs"), "{out}");
-        let summary = summary_line(&queue);
+        let summary = summary_line(&queue, &comments);
         assert!(
             summary.contains("进行中") && summary.contains("待执行"),
             "{summary}"
         );
+        // Counts alone are not enough: the in-flight item is named.
+        assert!(summary.contains("正在跑：#11 add tests"), "{summary}");
         assert_eq!(
             checklist(&QueueState::new(), &comments),
             "（队列为空）".to_string()
         );
+    }
+
+    #[test]
+    fn summary_names_running_item_and_falls_back_to_next() {
+        let comments = vec![
+            comment(11, "@hoverstare add tests"),
+            comment(12, "@hoverstare then update the docs"),
+        ];
+        let mut queue = QueueState::new();
+        queue.enqueue(11, ItemKind::Human, "add tests").unwrap();
+        queue
+            .enqueue(12, ItemKind::Human, "then update the docs")
+            .unwrap();
+
+        // Nothing running: the summary points at the next item instead.
+        let idle = summary_line(&queue, &comments);
+        assert!(idle.contains("下一轮 #11"), "{idle}");
+        assert!(!idle.contains("正在跑"), "{idle}");
+
+        // In flight: the summary names id + first-line snippet.
+        queue.set_state(11, ItemState::Running);
+        let busy = summary_line(&queue, &comments);
+        assert!(busy.contains("正在跑：#11 add tests"), "{busy}");
+
+        // A vanished source comment still renders the id.
+        queue.set_state(11, ItemState::Done);
+        queue.set_state(12, ItemState::Running);
+        let gone = summary_line(&queue, &[]);
+        assert!(gone.contains("正在跑：#12"), "{gone}");
+    }
+
+    #[test]
+    fn round_note_names_the_executed_item() {
+        let comments = vec![comment(11, "@hoverstare add tests")];
+        let mut queue = QueueState::new();
+        queue.enqueue(11, ItemKind::Human, "add tests").unwrap();
+        queue.set_state(11, ItemState::Done);
+        let note = round_note(&queue, &comments, 11);
+        assert!(note.contains("本轮执行 #11 add tests"), "{note}");
+        assert!(note.contains("队列："), "{note}");
     }
 
     #[test]

@@ -16,7 +16,7 @@ use crate::config::{Actor, Config, PermissionKey};
 use crate::develop::{self};
 use crate::devqueue::{
     Idle, ItemKind, ItemState, MergeGate, Outcome, QUEUE_PREFIX, QueueState, RoundRecord,
-    checklist, instruction, merge_gate, precheck, self_trigger, summary_line,
+    checklist, instruction, merge_gate, precheck, round_note, self_trigger, summary_line,
 };
 use crate::event::{DevEvent, DevKind};
 use crate::git::GitRepo;
@@ -716,10 +716,14 @@ async fn pr_dev_round(
     };
     // Queue status rides with the report so a human sees what is still pending
     // or in flight without opening the queue command (spec 11 §6).
-    let queue_note = if queue.open_count() == 0 {
+    let queue_note = if src != 0 {
+        // The item left `Running` above, so the report names what this round
+        // executed instead of only counting what is left.
+        round_note(&queue, &comments, src)
+    } else if queue.open_count() == 0 {
         "队列已空".to_string()
     } else {
-        summary_line(&queue)
+        summary_line(&queue, &comments)
     };
     gh.create_issue_comment(
         repo,
@@ -776,7 +780,7 @@ async fn queue_flow(gh: &GitHubClient, repo: &Repo, ev: &DevEvent) -> anyhow::Re
     } else {
         format!(
             "{}\n\n{}",
-            summary_line(&queue),
+            summary_line(&queue, &comments),
             checklist(&queue, &comments)
         )
     };
