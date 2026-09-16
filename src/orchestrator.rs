@@ -609,7 +609,7 @@ pub async fn analyze(
                 .join(", ")
         );
     }
-    let backend = RigBackend::new(cfg.llm.clone());
+    let backend = RigBackend::from_config(cfg);
     let outcome = crate::pipeline::run(
         &backend,
         cfg,

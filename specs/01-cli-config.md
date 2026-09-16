@@ -35,6 +35,8 @@ Commands:
 | env `GITHUB_WORKSPACE` | checkout 后的仓库根目录（工具沙箱根） |
 | env `HOVERSTARE_MODEL` / `HOVERSTARE_REFORMAT_MODEL` | 覆盖 toml 中的模型名（调试/临时切换用） |
 | env `HOVERSTARE_LANGUAGE` | 覆盖 toml `language`（输出语言，en/zh-CN/ru/fr/de/es） |
+| env `HOVERSTARE_THINKING` / `HOVERSTARE_REASONING_EFFORT` | 覆盖 toml 的思考模式配置 |
+| env `HOVERSTARE_CONTEXT_TOKENS` | 覆盖 toml `context_tokens`（模型上下文窗口） |
 
 非 Actions 环境本地调试时，`--pr` + `GITHUB_REPOSITORY` + 两个 token 即可运行。
 
@@ -75,6 +77,22 @@ status_checks = false
 # 置 false 则不传该字段（多 pass 的多样性改由侧重 prompt 承担）
 set_temperature = true
 
+# 思考模式（DeepSeek 等支持 reasoning 的 OpenAI 兼容端点）。
+# 两个字段都留空 = 一个都不发（老端点如 kimi-for-coding 不认这两个字段，会 400）。
+# thinking = "enabled" | "disabled"
+# reasoning_effort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max"
+# effort = "none" 或 thinking = "disabled" 等价于关闭思考模式（只发 disabled，不发 effort）。
+# DeepSeek 服务端的 effort 映射：minimal/low -> low，medium/high/xhigh -> high，max -> max；
+# 思考模式下 temperature 不生效（配 set_temperature = false 即可不发送该字段）。
+# 仅 OpenAI 兼容路径生效；Anthropic 原生路径语义不同（thinking 需要 budget_tokens），暂不发送。
+thinking = "enabled"
+reasoning_effort = "medium"
+
+# 模型上下文窗口（token）。设置后用于推导 diff 预算上限：diff 文本按 4 字节/token
+# 估算、最多占窗口的一半，超过时把 max_diff_kb 收窄到该上限并 warn。
+# DeepSeek deepseek-flash 为 1M。留空 = 不做推导（行为同旧版本）。
+context_tokens = 1000000
+
 # 输出语言：PR review 正文/行内评论/help/status check 描述/主要日志/LLM 输出语言。
 # 支持 en / zh-CN / ru / fr / de / es（与 README 语言集一致）。
 # 优先级：HOVERSTARE_LANGUAGE env > 本字段 > 默认 en；无法识别一律回退 en。
@@ -93,6 +111,8 @@ CLI flag > 环境变量 > `.github/hoverstare.toml` > 内置默认值
 
 - `model` 非空；`passes >= 1`；`max_diff_kb >= 50`；`max_tool_calls >= 1`
 - `severity_threshold` 必须是枚举值之一
+- `thinking` 必须是 `enabled` / `disabled`；`reasoning_effort` 必须是枚举值之一
+- `context_tokens` 设置时必须 `>= 4096`
 - `ignore` 的 glob 必须可编译
 - `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` 至少一个存在
 
@@ -128,6 +148,8 @@ pub struct Config {
     pub timeout_secs: u64,
     pub review_drafts: bool,
     pub fail_closed: bool,
+    pub reasoning: ReasoningOptions, // thinking + reasoning_effort（spec 04）
+    pub context_tokens: Option<u64>, // 模型上下文窗口（推导 diff 预算上限）
     pub status_checks: bool,
     pub instructions: String,
     pub github_token: SecretString,

@@ -151,6 +151,9 @@ fail_closed = false                   # true → les échecs d'analyse font éch
 status_checks = false                 # écrire les checks hoverstare / hoverstare-findings
 language = "en"        # langue de sortie : en/zh-CN/ru/fr/de/es
 set_temperature = true                # false pour les endpoints n'acceptant que la température par défaut
+thinking = "enabled"
+reasoning_effort = "medium"
+context_tokens = 1000000
 instructions = ""                     # focus de revue de l'équipe, injecté dans le prompt système
 ```
 

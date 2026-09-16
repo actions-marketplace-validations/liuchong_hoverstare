@@ -11,6 +11,8 @@ use globset::{Glob, GlobSet, GlobSetBuilder};
 use secrecy::SecretString;
 use serde::Deserialize;
 
+use crate::agent::{ReasoningEffort, ReasoningOptions, ThinkingMode};
+
 #[derive(Debug, Clone)]
 pub struct Config {
     pub model: String,
@@ -37,6 +39,11 @@ pub struct Config {
     /// Whether to set temperature on requests (some endpoints only accept the
     /// default; when false the field is not sent)
     pub set_temperature: bool,
+    /// Provider-side thinking/reasoning tuning (spec 01/04)
+    pub reasoning: ReasoningOptions,
+    /// Model context window in tokens (spec 01). When set, it caps the diff
+    /// budget so the prompt still fits the window.
+    pub context_tokens: Option<u64>,
     /// Output language (HOVERSTARE_LANGUAGE env > toml language > default en)
     pub language: crate::i18n::Lang,
     pub github_token: Option<SecretString>,
@@ -351,6 +358,33 @@ fn actor_association_matches_one_of(association: &str, expected: &[&str]) -> boo
     expected.iter().any(|e| association.eq_ignore_ascii_case(e))
 }
 
+/// env var (non-empty) > toml value; empty strings count as unset (GH Actions
+/// interpolates missing vars as empty).
+fn env_or(key: &str, toml: Option<String>) -> Option<String> {
+    std::env::var(key).ok().filter(|v| !v.is_empty()).or(toml)
+}
+
+fn parse_thinking(raw: Option<String>) -> anyhow::Result<Option<ThinkingMode>> {
+    match raw {
+        None => Ok(None),
+        Some(v) => ThinkingMode::parse(&v)
+            .map(Some)
+            .with_context(|| format!("invalid thinking mode: {v:?} (expected enabled|disabled)")),
+    }
+}
+
+fn parse_effort(raw: Option<String>) -> anyhow::Result<Option<ReasoningEffort>> {
+    match raw {
+        None => Ok(None),
+        Some(v) => ReasoningEffort::parse(&v).map(Some).with_context(|| {
+            format!(
+                "invalid reasoning_effort: {v:?} \
+                 (expected none|minimal|low|medium|high|xhigh|max)"
+            )
+        }),
+    }
+}
+
 /// File structure of `.github/hoverstare.toml` (all optional)
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -369,9 +403,19 @@ struct TomlConfig {
     status_checks: Option<bool>,
     instructions: Option<String>,
     set_temperature: Option<bool>,
+    thinking: Option<String>,
+    reasoning_effort: Option<String>,
+    context_tokens: Option<u64>,
     language: Option<String>,
     permissions: Option<Permissions>,
 }
+
+/// Rough bytes-per-token estimate for diff text (code is ASCII-heavy).
+const BYTES_PER_TOKEN: usize = 4;
+/// Divisor for the share of the context window the diff may occupy.
+const DIFF_CONTEXT_DIVISOR: usize = 2;
+/// Smallest accepted `context_tokens` value (spec 01).
+const MIN_CONTEXT_TOKENS: u64 = 4096;
 
 /// Built-in filter rules (spec 03): lockfiles / minified artifacts / CI directories
 const BUILTIN_IGNORE: &[&str] = &[
@@ -437,6 +481,24 @@ impl Config {
         let max_tool_calls = t.max_tool_calls.unwrap_or(20);
         let timeout_secs = t.timeout_secs.unwrap_or(900);
 
+        // Reasoning tuning (spec 01/04): both fields are optional and are only
+        // sent when configured (see ReasoningOptions).
+        let reasoning = ReasoningOptions {
+            thinking: parse_thinking(env_or("HOVERSTARE_THINKING", t.thinking))?,
+            effort: parse_effort(env_or("HOVERSTARE_REASONING_EFFORT", t.reasoning_effort))?,
+        };
+        let context_tokens = match env_or(
+            "HOVERSTARE_CONTEXT_TOKENS",
+            t.context_tokens.map(|v| v.to_string()),
+        ) {
+            Some(raw) => Some(
+                raw.trim()
+                    .parse::<u64>()
+                    .with_context(|| format!("invalid HOVERSTARE_CONTEXT_TOKENS: {raw:?}"))?,
+            ),
+            None => None,
+        };
+
         // Validation (spec 01)
         if model.trim().is_empty() {
             bail!("model must not be empty");
@@ -447,6 +509,28 @@ impl Config {
         if max_diff_kb < 50 {
             bail!("max_diff_kb must be >= 50 (got {max_diff_kb})");
         }
+        if let Some(tokens) = context_tokens
+            && tokens < MIN_CONTEXT_TOKENS
+        {
+            bail!("context_tokens must be >= {MIN_CONTEXT_TOKENS} (got {tokens})");
+        }
+        // Diff budget derived from the model context window (spec 01): the diff
+        // is estimated at BYTES_PER_TOKEN bytes/token and may take at most
+        // 1/DIFF_CONTEXT_DIVISOR of the window. A larger max_diff_kb is clamped
+        // (the prompt must still fit), a smaller one is untouched.
+        let max_diff_kb = match context_tokens {
+            Some(tokens) => {
+                let cap_kb = (tokens as usize * BYTES_PER_TOKEN / DIFF_CONTEXT_DIVISOR) / 1024;
+                if max_diff_kb > cap_kb {
+                    tracing::warn!(
+                        "max_diff_kb={max_diff_kb} exceeds the {cap_kb}KB that fits the \
+                         configured context_tokens={tokens}; clamping"
+                    );
+                }
+                max_diff_kb.min(cap_kb.max(1))
+            }
+            None => max_diff_kb,
+        };
         if max_tool_calls == 0 {
             bail!("max_tool_calls must be >= 1");
         }
@@ -527,6 +611,8 @@ impl Config {
             status_checks: t.status_checks.unwrap_or(false),
             instructions: t.instructions.unwrap_or_default(),
             set_temperature: t.set_temperature.unwrap_or(true),
+            reasoning,
+            context_tokens,
             language: crate::i18n::Lang::resolve(
                 std::env::var("HOVERSTARE_LANGUAGE").ok().as_deref(),
                 t.language.as_deref(),
@@ -608,6 +694,53 @@ mod tests {
     #[test]
     fn unknown_fields_rejected() {
         assert!(merge_str("unknown_key = 1").is_err());
+    }
+
+    #[test]
+    fn reasoning_defaults_to_unset() {
+        // spec 01/04: nothing configured => no extra request body fields at all
+        let c = merge_str("").unwrap();
+        assert!(c.reasoning.is_empty());
+        assert!(c.reasoning.openai_params().is_none());
+        assert_eq!(c.context_tokens, None);
+        assert_eq!(c.max_diff_kb, 400);
+    }
+
+    #[test]
+    fn reasoning_toml_overrides() {
+        let c = merge_str(
+            r#"thinking = "enabled"
+               reasoning_effort = "medium"
+               context_tokens = 1000000"#,
+        )
+        .unwrap();
+        assert_eq!(
+            c.reasoning.openai_params().unwrap(),
+            serde_json::json!({"thinking": {"type": "enabled"}, "reasoning_effort": "medium"})
+        );
+        assert_eq!(c.context_tokens, Some(1_000_000));
+        // 1M tokens is far larger than the default diff budget: not clamped
+        assert_eq!(c.max_diff_kb, 400);
+    }
+
+    #[test]
+    fn reasoning_invalid_values_rejected() {
+        assert!(merge_str(r#"thinking = "on""#).is_err());
+        assert!(merge_str(r#"reasoning_effort = "ultra""#).is_err());
+        assert!(merge_str("context_tokens = 100").is_err());
+    }
+
+    #[test]
+    fn context_tokens_clamps_diff_budget() {
+        // 32K tokens -> 32K*4/2 bytes = 64KB of diff at most
+        let c = merge_str("context_tokens = 32768").unwrap();
+        assert_eq!(c.max_diff_kb, 64);
+        // 256K tokens -> 256K*4/2 bytes = 512KB of diff at most
+        let c = merge_str("context_tokens = 262144\nmax_diff_kb = 5000").unwrap();
+        assert_eq!(c.max_diff_kb, 512);
+        // a budget below the cap is left alone
+        let c = merge_str("context_tokens = 262144\nmax_diff_kb = 100").unwrap();
+        assert_eq!(c.max_diff_kb, 100);
     }
 
     #[test]

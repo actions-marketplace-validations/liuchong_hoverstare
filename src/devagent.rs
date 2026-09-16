@@ -212,7 +212,7 @@ async fn discuss_round(
     let issue = gh.get_issue(repo, ev.number).await?;
     let thread = render_thread(&issue.title, issue.body.as_deref().unwrap_or(""), comments);
     let meta = gh.get_repo_meta(repo).await?;
-    let backend = RigBackend::new(cfg.llm.clone());
+    let backend = RigBackend::from_config(cfg);
     let budget = Budget {
         max_tool_calls: cfg.max_tool_calls.max(20),
         timeout: Duration::from_secs(300),
@@ -315,7 +315,7 @@ async fn implement_issue(
         issue.body.unwrap_or_default(),
         thread
     );
-    let backend = RigBackend::new(cfg.llm.clone());
+    let backend = RigBackend::from_config(cfg);
     let outcome = develop::run(develop::DevelopRequest {
         workspace: &cfg.workspace,
         task: &task,
@@ -451,7 +451,7 @@ async fn pr_dev_round(
          Implement the instruction now, staying minimal and focused.",
         ev.number, instruction
     );
-    let backend = RigBackend::new(cfg.llm.clone());
+    let backend = RigBackend::from_config(cfg);
     let outcome = develop::run(develop::DevelopRequest {
         workspace: &cfg.workspace,
         task: &task,

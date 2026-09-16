@@ -1,5 +1,11 @@
 # 本仓库自举（dogfooding）配置
-model = "k3"
-reformat_model = "kimi-for-coding-highspeed"
-# Kimi Code 端点只接受默认 temperature，不传该字段
+# DeepSeek OpenAI 兼容端点（base_url / key 走 Actions secret+var）
+model = "deepseek-flash"
+reformat_model = "deepseek-flash"
+# 思考模式：DeepSeek 默认开启；medium 在服务端映射为 high（见 DeepSeek 思考模式文档）
+thinking = "enabled"
+reasoning_effort = "medium"
+# deepseek-flash 上下文长度 1M token（推导 diff 预算上限用）
+context_tokens = 1000000
+# 思考模式下 temperature 不生效，干脆不发该字段
 set_temperature = false

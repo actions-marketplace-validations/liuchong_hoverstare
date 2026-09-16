@@ -167,7 +167,7 @@ async fn run_develop(args: DevelopArgs) -> i32 {
     };
     // M11 local mode: run a task in the current workspace, no GitHub events.
     if let Some(task) = args.task {
-        let backend = crate::agent::rig_backend::RigBackend::new(cfg.llm.clone());
+        let backend = crate::agent::rig_backend::RigBackend::from_config(&cfg);
         let budget = cfg.max_tool_calls.max(develop::DEFAULT_BUDGET_CALLS);
         return match develop::run(develop::DevelopRequest {
             workspace: &cfg.workspace,

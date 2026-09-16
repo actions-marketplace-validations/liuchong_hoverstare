@@ -84,6 +84,9 @@ fly deploy
 | `OPENAI_BASE_URL` | | OpenAI 兼容端点 |
 | `HOVERSTARE_MODEL` | | 主审模型（OpenAI 兼容端点必填） |
 | `HOVERSTARE_REFORMAT_MODEL` | | 输出修复模型 |
+| `HOVERSTARE_THINKING` | | 思考模式开关（`enabled`/`disabled`，仅 OpenAI 兼容端点） |
+| `HOVERSTARE_REASONING_EFFORT` | | 思考强度（`none`/`minimal`/`low`/`medium`/`high`/`xhigh`/`max`） |
+| `HOVERSTARE_CONTEXT_TOKENS` | | 模型上下文窗口（token，如 DeepSeek `deepseek-flash` 为 `1000000`） |
 | `PORT` | | 监听端口（默认 8080） |
 | `HOVERSTARE_SERVE_MAX_JOBS` | | 并发任务上限（默认 4） |
 

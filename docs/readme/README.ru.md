@@ -149,6 +149,9 @@ fail_closed = false                   # true — ошибки анализа л�
 status_checks = false                 # писать проверки hoverstare / hoverstare-findings
 language = "en"        # язык вывода: en/zh-CN/ru/fr/de/es
 set_temperature = true                # false для endpoint'ов, принимающих только температуру по умолчанию
+thinking = "enabled"
+reasoning_effort = "medium"
+context_tokens = 1000000
 instructions = ""                     # фокус ревью команды, добавляется в системный промпт
 ```
 

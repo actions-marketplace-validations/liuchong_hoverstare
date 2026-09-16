@@ -149,6 +149,9 @@ fail_closed = false                   # true → analysis failures fail CI
 status_checks = false                 # write hoverstare / hoverstare-findings checks
 language = "en"                       # output language: en/zh-CN/ru/fr/de/es
 set_temperature = true                # false for endpoints that only accept default temperature
+thinking = "enabled"
+reasoning_effort = "medium"
+context_tokens = 1000000
 instructions = ""                     # team-specific review focus, injected into the system prompt
 ```
 

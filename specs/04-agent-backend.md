@@ -111,6 +111,15 @@ pub struct ToolCallRecord { pub name: String, pub args_summary: String,
   3 路并发无限流、max_tokens 非必填）；
 - 构建 agent：`client.agent(model).preamble(system_prompt)` + 注册 4 个工具 +
   temperature + max_tokens 显式设置（预算控制，与端点是否必填无关）；多轮循环由 rig agent 的 tool-call 执行能力承担；
+- **思考模式（spec 01 `thinking` / `reasoning_effort`）**：只在 OpenAI 兼容路径上生效，
+  通过 rig 的 `AgentBuilder::additional_params()` 合进请求体
+  （`{"thinking":{"type":"enabled"},"reasoning_effort":"medium"}`）；两个字段都未配置时
+  一个都不发（老端点不认这两个字段会 400）。Anthropic 原生路径语义不同（`thinking` 需要
+  `budget_tokens`），本版不发送。
+- **DeepSeek 思考模式 + tools 的历史回传**：带 tools 的请求需要在后续轮次回传历史
+  assistant 的 `reasoning_content`（DeepSeek 文档要求，否则多轮上下文不连贯）；
+  rig 0.36 已把该非标准字段解析为 `AssistantContent::Reasoning` 并原样回传，无需自行处理。
+  最终返回值只取 `content` 文本，思维链不会污染 findings JSON 提取（spec 06）。
 - 预算执行：max_tool_calls 在工具分发层计数，超预算后工具返回
   `"budget exhausted, please conclude with current findings"`，引导模型收尾；
   总超时用 `tokio::time::timeout` 包住整个 run；

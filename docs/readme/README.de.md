@@ -152,6 +152,9 @@ fail_closed = false                   # true → Analysefehler lassen CI fehlsch
 status_checks = false                 # hoverstare / hoverstare-findings Checks schreiben
 language = "en"        # Ausgabesprache: en/zh-CN/ru/fr/de/es
 set_temperature = true                # false für Endpoints, die nur Standard-Temperatur akzeptieren
+thinking = "enabled"
+reasoning_effort = "medium"
+context_tokens = 1000000
 instructions = ""                     # team-spezifischer Review-Fokus, wird in den Systemprompt injiziert
 ```
 

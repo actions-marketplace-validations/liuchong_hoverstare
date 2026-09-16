@@ -21,7 +21,9 @@ use serde::Deserialize;
 use serde_json::json;
 
 use crate::agent::tools::{self, ToolShared};
-use crate::agent::{AgentBackend, AgentError, ReviewRequest, ReviewRun, ToolProfile, Usage};
+use crate::agent::{
+    AgentBackend, AgentError, ReasoningOptions, ReviewRequest, ReviewRun, ToolProfile, Usage,
+};
 use crate::config::LlmCredentials;
 
 /// Output limit per call (the findings JSON is never large)
@@ -34,11 +36,18 @@ type PromptFuture = Pin<Box<dyn Future<Output = Result<String, PromptError>> + S
 
 pub struct RigBackend {
     creds: LlmCredentials,
+    /// Thinking/reasoning tuning (spec 01/04); empty = send nothing extra
+    reasoning: ReasoningOptions,
 }
 
 impl RigBackend {
-    pub fn new(creds: LlmCredentials) -> RigBackend {
-        RigBackend { creds }
+    pub fn new(creds: LlmCredentials, reasoning: ReasoningOptions) -> RigBackend {
+        RigBackend { creds, reasoning }
+    }
+
+    /// Convenience constructor from the loaded config.
+    pub fn from_config(cfg: &crate::config::Config) -> RigBackend {
+        RigBackend::new(cfg.llm.clone(), cfg.reasoning)
     }
 }
 
@@ -87,6 +96,13 @@ impl RigBackend {
                 if let Some(t) = temp {
                     builder = builder.temperature(t);
                 }
+                // Anthropic's native thinking config has different semantics
+                // (budget_tokens), so provider tuning is not forwarded here.
+                if !self.reasoning.is_empty() {
+                    tracing::debug!(
+                        "thinking/reasoning_effort configured but not sent on the Anthropic path"
+                    );
+                }
                 Ok(match shared {
                     Some(shared) => {
                         let agent =
@@ -115,6 +131,12 @@ impl RigBackend {
                     .max_tokens(MAX_OUTPUT_TOKENS);
                 if let Some(t) = temp {
                     builder = builder.temperature(t);
+                }
+                // DeepSeek-style thinking mode: merged into the request body as
+                // {"thinking":{"type":"enabled"},"reasoning_effort":"medium"}.
+                // Nothing is sent when the config leaves both fields unset.
+                if let Some(params) = self.reasoning.openai_params() {
+                    builder = builder.additional_params(params);
                 }
                 Ok(match shared {
                     Some(shared) => {

@@ -72,6 +72,120 @@ pub struct Usage {
     pub output_tokens: u64,
 }
 
+/// Thinking-mode switch (spec 01 `thinking`), DeepSeek/OpenAI-compatible semantic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ThinkingMode {
+    Enabled,
+    Disabled,
+}
+
+impl ThinkingMode {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "enabled" => Some(Self::Enabled),
+            "disabled" => Some(Self::Disabled),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Enabled => "enabled",
+            Self::Disabled => "disabled",
+        }
+    }
+}
+
+/// Reasoning effort (spec 01 `reasoning_effort`). Values mirror the DeepSeek
+/// scale; the server maps `minimal/low -> low`, `medium/high/xhigh -> high`,
+/// `max -> max`. `None` is the API-level switch (config value "none") that
+/// turns thinking mode off.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReasoningEffort {
+    None,
+    Minimal,
+    Low,
+    Medium,
+    High,
+    Xhigh,
+    Max,
+}
+
+impl ReasoningEffort {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "none" => Some(Self::None),
+            "minimal" => Some(Self::Minimal),
+            "low" => Some(Self::Low),
+            "medium" => Some(Self::Medium),
+            "high" => Some(Self::High),
+            "xhigh" => Some(Self::Xhigh),
+            "max" => Some(Self::Max),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Minimal => "minimal",
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+            Self::Xhigh => "xhigh",
+            Self::Max => "max",
+        }
+    }
+}
+
+/// Provider-side generation tuning (spec 01/04). Both fields are `Option` so
+/// that an unconfigured deployment sends **no** extra body fields at all
+/// (endpoints that predate reasoning — e.g. kimi-for-coding — reject unknown
+/// fields with 400).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ReasoningOptions {
+    /// None = omit `thinking` from the request
+    pub thinking: Option<ThinkingMode>,
+    /// None = omit `reasoning_effort` from the request
+    pub effort: Option<ReasoningEffort>,
+}
+
+impl ReasoningOptions {
+    /// Nothing configured: callers must not send any reasoning field.
+    pub fn is_empty(&self) -> bool {
+        self.thinking.is_none() && self.effort.is_none()
+    }
+
+    /// Whether thinking mode ends up disabled (`thinking = "disabled"` or
+    /// `reasoning_effort = "none"`).
+    pub fn thinking_disabled(&self) -> bool {
+        self.thinking == Some(ThinkingMode::Disabled) || self.effort == Some(ReasoningEffort::None)
+    }
+
+    /// The request-body fragment for OpenAI-compatible endpoints:
+    /// `{"thinking":{"type":"enabled"},"reasoning_effort":"medium"}`.
+    /// None when nothing is configured.
+    pub fn openai_params(&self) -> Option<serde_json::Value> {
+        if self.is_empty() {
+            return None;
+        }
+        let disabled = self.thinking_disabled();
+        let thinking = if disabled { "disabled" } else { "enabled" };
+        let mut params = serde_json::Map::new();
+        params.insert(
+            "thinking".to_string(),
+            serde_json::json!({ "type": thinking }),
+        );
+        if !disabled && let Some(effort) = self.effort {
+            params.insert(
+                "reasoning_effort".to_string(),
+                serde_json::json!(effort.as_str()),
+            );
+        }
+        Some(serde_json::Value::Object(params))
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum AgentError {
     #[error("agent call timed out ({0:?})")]
@@ -83,4 +197,67 @@ pub enum AgentError {
 #[async_trait::async_trait]
 pub trait AgentBackend: Send + Sync {
     async fn review(&self, req: ReviewRequest) -> Result<ReviewRun, AgentError>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reasoning_options_are_empty_by_default() {
+        let opts = ReasoningOptions::default();
+        assert!(opts.is_empty());
+        assert!(opts.openai_params().is_none());
+    }
+
+    #[test]
+    fn reasoning_params_enable_thinking_and_effort() {
+        let opts = ReasoningOptions {
+            thinking: Some(ThinkingMode::Enabled),
+            effort: Some(ReasoningEffort::Medium),
+        };
+        assert_eq!(
+            opts.openai_params().unwrap(),
+            serde_json::json!({"thinking": {"type": "enabled"}, "reasoning_effort": "medium"})
+        );
+    }
+
+    #[test]
+    fn reasoning_effort_none_disables_thinking_and_drops_effort() {
+        let opts = ReasoningOptions {
+            thinking: None,
+            effort: Some(ReasoningEffort::None),
+        };
+        assert_eq!(
+            opts.openai_params().unwrap(),
+            serde_json::json!({"thinking": {"type": "disabled"}})
+        );
+    }
+
+    #[test]
+    fn thinking_disabled_wins_over_effort() {
+        let opts = ReasoningOptions {
+            thinking: Some(ThinkingMode::Disabled),
+            effort: Some(ReasoningEffort::High),
+        };
+        assert_eq!(
+            opts.openai_params().unwrap(),
+            serde_json::json!({"thinking": {"type": "disabled"}})
+        );
+    }
+
+    #[test]
+    fn reasoning_parse_matrix() {
+        assert_eq!(
+            ThinkingMode::parse(" ENABLED "),
+            Some(ThinkingMode::Enabled)
+        );
+        assert_eq!(ThinkingMode::parse("on"), None);
+        assert_eq!(
+            ReasoningEffort::parse("xhigh"),
+            Some(ReasoningEffort::Xhigh)
+        );
+        assert_eq!(ReasoningEffort::parse("ultra"), None);
+        assert_eq!(ReasoningEffort::None.as_str(), "none");
+    }
 }

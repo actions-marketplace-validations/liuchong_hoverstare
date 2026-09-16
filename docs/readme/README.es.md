@@ -151,6 +151,9 @@ fail_closed = false                   # true → los fallos de análisis rompen 
 status_checks = false                 # escribir checks hoverstare / hoverstare-findings
 language = "en"        # idioma de salida: en/zh-CN/ru/fr/de/es
 set_temperature = true                # false para endpoints que solo aceptan la temperatura por defecto
+thinking = "enabled"
+reasoning_effort = "medium"
+context_tokens = 1000000
 instructions = ""                     # enfoque de revisión del equipo, inyectado en el prompt de sistema
 ```
 

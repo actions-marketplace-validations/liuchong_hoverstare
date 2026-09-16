@@ -83,6 +83,9 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.HOVERSTARE_LLM_KEY }}
           OPENAI_BASE_URL: ${{ vars.HOVERSTARE_LLM_BASE_URL }}
           HOVERSTARE_MODEL: ${{ vars.HOVERSTARE_MODEL }}
+          HOVERSTARE_THINKING: ${{ vars.HOVERSTARE_THINKING }}
+          HOVERSTARE_REASONING_EFFORT: ${{ vars.HOVERSTARE_REASONING_EFFORT }}
+          HOVERSTARE_CONTEXT_TOKENS: ${{ vars.HOVERSTARE_CONTEXT_TOKENS }}
         run: |
           set -euo pipefail
           bin=./target/release/hoverstare

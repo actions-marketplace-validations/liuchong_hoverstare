@@ -138,6 +138,9 @@ fail_closed = false                   # true 时分析失败会让 CI 失败
 status_checks = false                 # 写 hoverstare / hoverstare-findings 检查
 language = "en"     # 输出语言：en/zh-CN/ru/fr/de/es
 set_temperature = true                # 端点只接受默认温度时置 false
+thinking = "enabled"
+reasoning_effort = "medium"
+context_tokens = 1000000
 instructions = ""                     # 团队特定关注点，注入系统提示
 ```
 

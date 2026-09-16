@@ -267,6 +267,11 @@ bot 不主动去扫 CI。这次把「只坐在 github.com、不靠本机 CLI」�
 
 - LLM 凭据只走 env：`OPENAI_API_KEY`(+`OPENAI_BASE_URL`) 或 `ANTHROPIC_API_KEY`；
   模型名 `HOVERSTARE_MODEL` / toml `model`（OpenAI 兼容端点必配）。
+- 思考模式（仅 OpenAI 兼容端点）：`HOVERSTARE_THINKING` / `HOVERSTARE_REASONING_EFFORT`
+  （或 toml `thinking` / `reasoning_effort`），未配置则一个字段都不发；
+  `HOVERSTARE_CONTEXT_TOKENS` 记录模型窗口并用来钳制 `max_diff_kb`。
+  本仓库 dogfood 现接 DeepSeek：`https://api.deepseek.com` + `deepseek-flash`
+  + thinking medium + 1M 上下文（见 `.github/hoverstare.toml` 与 Actions vars）。
 - CI 里用户的 LLM key 放 GitHub Secrets（如 `HOVERSTARE_LLM_KEY`），
   **绝不写进 toml/workflow/日志**。
 - 本地开发 key 放 `spikes/rig-kimi-probe/.env`（已 gitignore，模式 `.env*` 全部忽略）。
