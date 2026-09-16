@@ -1087,7 +1087,6 @@ mod tests {
     #[tokio::test]
     async fn an_empty_reply_is_asked_again_before_the_run_fails() {
         let (_dir, shared) = two_file_workspace();
-        let counter = Arc::new(AtomicUsize::new(0));
         let client = ScriptedClient::new(vec![scripted(|_index, _call| Ok(reply("")))]);
         let result = loop_with(client.clone(), 100_000)
             .review(request(Some(shared), 8))
