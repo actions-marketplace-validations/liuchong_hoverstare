@@ -981,6 +981,12 @@ fn parse_edits(arguments: &serde_json::Value) -> Result<Vec<(String, String)>, S
 /// that treats any text as a final answer will report a round that did nothing
 /// as if it had finished.
 pub fn looks_like_tool_markup(text: &str, specs: &[ToolSpec]) -> bool {
+    // The provider-specific dialect first: its separators are fullwidth, so an
+    // ASCII-only check walks straight past it.
+    const DSML_MARKER: &str = "\u{ff5c}\u{ff5c}DSML\u{ff5c}\u{ff5c}";
+    if text.contains(DSML_MARKER) {
+        return true;
+    }
     let lowered = text.to_ascii_lowercase();
     specs.iter().any(|spec| {
         let name = spec.name.to_ascii_lowercase();

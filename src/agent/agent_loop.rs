@@ -1337,6 +1337,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_provider_specific_tool_dialect_is_not_an_answer_either() {
+        let (_dir, shared) = two_file_workspace();
+        let lt = '\u{3c}';
+        let gt = '\u{3e}';
+        let pipes = "\u{ff5c}\u{ff5c}DSML\u{ff5c}\u{ff5c}";
+        let markup = format!("{lt}{pipes}tool_calls{gt}{lt}{pipes}invoke name=\"grep\"{gt}");
+        let counter = Arc::new(AtomicUsize::new(0));
+        let client = ScriptedClient::new(vec![scripted(move |_index, _call| {
+            if counter.fetch_add(1, Ordering::SeqCst) == 0 {
+                return Ok(reply(&markup));
+            }
+            Ok(reply("final"))
+        })]);
+        let run = loop_with(client.clone(), 100_000)
+            .review(request(Some(shared), 8))
+            .await
+            .unwrap();
+        assert_eq!(run.raw_output, "final");
+    }
+
+    #[tokio::test]
     async fn a_transient_provider_failure_is_retried_inside_the_loop() {
         let (_dir, shared) = two_file_workspace();
         let client = ScriptedClient::new(vec![scripted(|index, _call| match index {

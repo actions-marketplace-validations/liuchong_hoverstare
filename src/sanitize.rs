@@ -7,6 +7,17 @@
 //! reach a pull request body or a comment, where it would be read by humans and
 //! fed back to the next round as context.
 
+/// Marker of the alternate dialect a model uses when it writes a tool call
+/// as text: the provider's DSML tags, whose separators are FULLWIDTH VERTICAL
+/// LINE (U+FF5C) rather than ASCII. Anything between two of those pipes and the
+/// tag name (`invoke`, `parameter`, `tool_calls`, a tool name) is markup too.
+const DSML_MARKER: &str = "\u{ff5c}\u{ff5c}DSML\u{ff5c}\u{ff5c}";
+/// The characters that wrap a tag in that dialect, as escaped constants so this
+/// source file never contains the raw sequence.
+const TAG_OPEN: char = '\u{3c}';
+const TAG_CLOSE: char = '\u{3e}';
+const TAG_SLASH: char = '\u{2f}';
+
 /// Tool names whose markup must never be published.
 const TOOL_TAGS: &[&str] = &[
     "read_file",
@@ -26,7 +37,7 @@ pub const EMPTY_SUMMARY: &str = "(本轮没有可发布的摘要)";
 
 /// Strip tool-call markup from model TEXT and tidy the result.
 pub fn model_text(text: &str) -> String {
-    let mut out = text.to_string();
+    let mut out = strip_dsml(text);
     for tag in TOOL_TAGS {
         out = strip_tag(&out, tag);
     }
@@ -52,7 +63,55 @@ pub fn model_text(text: &str) -> String {
     tidied
 }
 
-/// Remove every `<tag …>…</tag>` block, and an unclosed `<tag …>` tail.
+/// Remove every DSML tag: the opening tag, its parameters and the closing tag.
+///
+/// The dialect carries its own names, and its closing tag repeats the opening
+/// name, so the block is recognisable without knowing the tool's schema.
+fn strip_dsml(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    loop {
+        let Some(open) = rest.find(DSML_MARKER) else {
+            out.push_str(rest);
+            break;
+        };
+        let Some(name_start) = rest[open + DSML_MARKER.len()..]
+            .find(char::is_alphabetic)
+            .map(|offset| open + DSML_MARKER.len() + offset)
+        else {
+            out.push_str(&rest[..open]);
+            rest = &rest[open + DSML_MARKER.len()..];
+            continue;
+        };
+        let Some(name_end) = rest[name_start..]
+            .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '-'))
+            .map(|offset| name_start + offset)
+        else {
+            out.push_str(&rest[..open]);
+            break;
+        };
+        let name = &rest[name_start..name_end];
+        // A tag's opening angle bracket sits right before the marker; it leaves
+        // with the block.
+        let cut_start = if rest[..open].ends_with(TAG_OPEN) {
+            open - TAG_OPEN.len_utf8()
+        } else {
+            open
+        };
+        out.push_str(&rest[..cut_start]);
+        // Everything from the opening tag's `<` up to and including its closing
+        // tag is markup. An unclosed block runs to the end of the text.
+        let after_open = &rest[cut_start..];
+        let close = format!("{TAG_SLASH}{DSML_MARKER}{name}{TAG_CLOSE}");
+        match after_open.find(&close) {
+            Some(end) => rest = &after_open[end + close.len()..],
+            None => break,
+        }
+    }
+    out
+}
+
+/// Remove every plain-XML tool block, and an unclosed opening tag's tail.
 fn strip_tag(text: &str, tag: &str) -> String {
     let open = format!("<{tag}");
     let close = format!("</{tag}>");
@@ -73,12 +132,9 @@ fn strip_tag(text: &str, tag: &str) -> String {
         out.push_str(&rest[..start]);
         match after.find(&close) {
             Some(end) => rest = &after[end + close.len()..],
-            // Unclosed markup runs to the end: everything after it is the
-            // failed tool call, not prose.
-            None => {
-                rest = "";
-                break;
-            }
+            // Unclosed markup runs to the end of the text: everything after it
+            // is the failed tool call, not prose.
+            None => return out,
         }
     }
     out.push_str(rest);
@@ -120,6 +176,35 @@ mod tests {
     fn a_longer_tag_name_is_not_mistaken_for_a_tool() {
         let clean = model_text("<grepper>not a tool</grepper>");
         assert!(clean.contains("<grepper>not a tool</grepper>"));
+    }
+
+    #[test]
+    fn the_provider_specific_dsml_dialect_is_removed_too() {
+        let lt = '\u{3c}';
+        let gt = '\u{3e}';
+        let slash = '\u{2f}';
+        let pipes = "\u{ff5c}\u{ff5c}DSML\u{ff5c}\u{ff5c}";
+        let raw = format!(
+            "本轮无代码改动。\n\n{lt}{pipes}tool_calls{gt}\n{lt}{pipes}invoke name=\"grep\"{gt}\n\
+             {lt}{pipes}parameter name=\"path\"{gt}src{lt}{slash}{pipes}parameter{gt}\n\
+             {lt}{slash}{pipes}invoke{gt}\n{lt}{slash}{pipes}tool_calls{gt}\n"
+        );
+        let clean = model_text(&raw);
+        assert_eq!(clean, "本轮无代码改动。");
+        assert!(!clean.contains("DSML"));
+    }
+
+    #[test]
+    fn an_unclosed_dsml_block_keeps_the_prose_before_it() {
+        let lt = '\u{3c}';
+        let gt = '\u{3e}';
+        let pipes = "\u{ff5c}\u{ff5c}DSML\u{ff5c}\u{ff5c}";
+        let raw = format!(
+            "真话在前。\n{lt}{pipes}invoke name=\"read_file\"{gt}\n{lt}{pipes}parameter name=\"path\"{gt}a.rs"
+        );
+        let clean = model_text(&raw);
+        assert!(clean.starts_with("真话在前。"));
+        assert!(!clean.contains("DSML"));
     }
 
     #[test]
