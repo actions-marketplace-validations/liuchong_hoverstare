@@ -505,6 +505,20 @@ pub fn instruction(comments: &[IssueComment], src: u64) -> Option<String> {
     }
 }
 
+/// How the item a round just ran ends up (spec 11 §6). `Done` means the task
+/// finished, not merely that a commit landed: a round cut short by the tool
+/// budget leaves the item pending, which is exactly what lets the next automatic
+/// round pick the same instruction up again (`dequeue` re-reads the comment).
+/// Without this, every round drained its own item and the automatic chain could
+/// never continue at all.
+pub fn state_after_round(progressed: bool, budget_exhausted: bool) -> ItemState {
+    match (progressed, budget_exhausted) {
+        (false, _) => ItemState::Failed,
+        (true, true) => ItemState::Pending,
+        (true, false) => ItemState::Done,
+    }
+}
+
 /// Whether a finished round pulls the next one (spec 11 §6): only progress that
 /// landed, only while the cap allows and only while work remains. A no-change
 /// round therefore stops in front of the human instead of looping.
@@ -829,6 +843,31 @@ mod tests {
             }
             other => panic!("expected a run, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn state_after_round_keeps_a_budget_cut_item_queued() {
+        assert_eq!(state_after_round(true, false), ItemState::Done);
+        assert_eq!(
+            state_after_round(true, true),
+            ItemState::Pending,
+            "a round cut short by the budget must stay queued so the chain resumes it"
+        );
+        assert_eq!(state_after_round(false, false), ItemState::Failed);
+        assert_eq!(state_after_round(false, true), ItemState::Failed);
+        // The composition that makes the automatic chain reachable: one queued
+        // instruction, a budget-cut round, and the item still open afterwards.
+        let mut queue = QueueState::new();
+        queue.enqueue(7, ItemKind::Human, "大任务第一段").unwrap();
+        queue.set_state(7, ItemState::Running);
+        queue.set_state(7, state_after_round(true, true));
+        assert!(
+            self_trigger(1, 10, Outcome::Ok, &queue),
+            "the cut round must pull another one for the same instruction"
+        );
+        // A round that finished the task drains the queue and stops the chain.
+        queue.set_state(7, state_after_round(true, false));
+        assert!(!self_trigger(1, 10, Outcome::Ok, &queue));
     }
 
     #[test]

@@ -152,9 +152,16 @@ GITHUB_TOKEN 的 push 不触发 CI，会导致 checks 不跑、无法合并。
 3. **出队规则**：`running` 优先 → 人类条目按来源 id 升序 → bot 条目；一轮只取
    一条；人类指令不因机器人自触发而被丢。
    锚点：`devqueue::tests::dequeue_is_running_then_human_then_fifo`。
-4. **执行与迁移**：本轮执行的条目在开局置 `running`，结束按结果置 `done` /
-   `failed`；失败不再自动重试（failure-stop）。
-   锚点：`devqueue::tests::self_trigger_only_after_landed_round_with_work_left`。
+4. **执行与迁移**：本轮执行的条目在开局置 `running`，结束按"**任务是否真的完成**"落位：
+   - 任务完成（未耗尽预算）→ `done`；
+   - **预算耗尽但已有进展 → 仍为 `pending`**（不是 `done`）：这正是自动链续轮的来源——下一轮
+     `dequeue` 取到同一条，指令文本仍从原评论回读，于是"大任务被预算切片、多轮做完"成立；
+   - 无改动 / 失败 → `failed`，链在此停止（failure-stop，不自动重试）。
+
+   若按"有没有提交"决定，每轮都会在结束时清空自己的条目，`self_trigger`
+   （进展 + 未达上限 + 队列仍有排队项）将永不可达、自动链等于被关掉——这是接线引入过的真缺陷。
+   锚点：`devqueue::tests::state_after_round_keeps_a_budget_cut_item_queued`、
+   `devagent::tests::round_end_continues_only_with_landed_progress_and_work_left`。
 5. **claim 守卫**：自触发评论携带"刚完成的轮次"；若最新标记轮次 ≥ 它声称的
    轮次，则本轮**静默退出**（被更新的 run 取代，不写任何东西）。
    锚点：`devqueue::tests::stale_claim_and_cap_are_prechecked`。

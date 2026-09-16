@@ -16,7 +16,8 @@ use crate::config::{Actor, Config, PermissionKey};
 use crate::develop::{self};
 use crate::devqueue::{
     Idle, ItemKind, ItemState, MergeGate, Outcome, QUEUE_PREFIX, QueueState, RoundRecord,
-    checklist, instruction, merge_gate, precheck, round_note, self_trigger, summary_line,
+    checklist, instruction, merge_gate, precheck, round_note, self_trigger, state_after_round,
+    summary_line,
 };
 use crate::event::{DevEvent, DevKind};
 use crate::git::GitRepo;
@@ -723,14 +724,9 @@ async fn pr_dev_round(
     // a round that produced nothing is failed — and a failure never releases the
     // next round. The final queue marker rides with the report (append-only).
     if src != 0 {
-        queue.set_state(
-            src,
-            if ok {
-                ItemState::Done
-            } else {
-                ItemState::Failed
-            },
-        );
+        // Done means the task finished, not that a commit happened: a round cut
+        // short by the budget stays queued so the automatic chain resumes it.
+        queue.set_state(src, state_after_round(ok, outcome.budget_exhausted));
     }
     let marker = DevMarker {
         m: "impl".into(),
@@ -750,7 +746,16 @@ async fn pr_dev_round(
     let queue_note = if src != 0 {
         // The item left `Running` above, so the report names what this round
         // executed instead of only counting what is left.
-        round_note(&queue, &comments, src)
+        {
+            let base = round_note(&queue, &comments, src);
+            // A budget-cut round says why its item is still queued: "已提交" next
+            // to a pending item otherwise reads like a bug.
+            if ok && outcome.budget_exhausted {
+                format!("{base}（本轮预算耗尽，条目保留待执行，将自动续轮）")
+            } else {
+                base
+            }
+        }
     } else if queue.open_count() == 0 {
         "队列已空".to_string()
     } else {
