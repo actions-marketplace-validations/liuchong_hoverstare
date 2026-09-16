@@ -183,6 +183,26 @@ GITHUB_TOKEN 的 push 不触发 CI，会导致 checks 不跑、无法合并。
    自触发评论身份为 `hoverstare[bot]`，故身份退化为 bot（`commit_identity` 的
    author/coauthor 只在人类触发轮生效，见 §3.3）。
 
+### 队列验收清单
+
+下列行为均**已被真实验证**（PR 上肉眼可见，或有确定单测锚点）；改动队列逻辑时
+照单回归。每条给「验证方式」：PR 上可观测的量，或单测名。
+
+| 行为 | 验证方式 |
+|---|---|
+| **严格串行**：同一 PR 同时只跑一轮，其余条目留 `pending` | 把两条 `@hoverstare <指令>` **分别**发成两条评论，`@hoverstare queue` 应恰好一条 `running`、另一条 `pending`，一次只点名一条。单测：`devqueue::tests::dequeue_is_running_then_human_then_fifo` |
+| **空队列不自触发**：链在队列排空时结束 | 最后一轮落地后 PR 上不再出现新的 `@hoverstare continue` 评论。单测：`devqueue::tests::self_trigger_only_after_landed_round_with_work_left`；接线（轮末真的走到停止，不是没人调用）：`devagent::tests::round_end_continues_only_with_landed_progress_and_work_left` |
+| **人类指令按评论 id 入队且去重** | 同一条评论事件重放（重试/重复投递）不重复入队，`@hoverstare queue` 计数不变。单测：`devqueue::tests::enqueue_refuses_beyond_caps_and_is_idempotent` |
+| **本轮条目 Running → 结束置 Done/Failed（失败即停）** | 轮次报告的队列状态行先显 `running`，收尾按结果落 `done` / `failed`，`failed` 不自动重试（生产路径：`devagent::pr_dev_round` 开局 `set_state(src, Running)`、收尾按结果置 `Done` / `Failed`）。单测：`devqueue::tests::self_trigger_only_after_landed_round_with_work_left`、`devagent::tests::round_end_continues_only_with_landed_progress_and_work_left` |
+| **claim 守卫**：被更新的 run 静默退出（不写评论不提交） | 旧 run 被新轮次取代后，PR 上既无它的评论也无它的 commit。单测：`devqueue::tests::stale_claim_and_cap_are_prechecked` |
+| **artifact gate**：上一轮记录的 sha 必须是 head 祖先 | 分支被改写（记录 sha 不再是 head 祖先）时自驱动轮停止、不叠加工作，人类指令不受限。单测：`devqueue::tests::artifact_gate_requires_ok_and_ancestor` |
+| **合并门**：pending 时拒绝合并、`force` 放行并说明丢弃条数 | 队列非空时 `@hoverstare merge` 拒绝并原样贴出 `@hoverstare queue` 清单；`@hoverstare merge force` 合并且在评论里说明丢弃条数。单测：`devqueue::tests::merge_gate_refuses_nonempty_queue_unless_forced` |
+| **轮次报告含队列状态与"本轮构建自"来源行** | 每条轮次报告带队列状态/清单一节，以及 `本轮构建自 <短 sha>（来源：…）` 来源行（无 pin 环境变量时不显示）。单测：`devqueue::tests::round_note_names_the_executed_item`、`devqueue::tests::summary_names_running_item_and_falls_back_to_next` |
+
+上表锚点集中在 `src/devqueue.rs`（纯逻辑）与 `src/devagent.rs`（轮次接线）；本地回归：
+`cargo test --workspace devqueue`（队列状态机与 gate）与 `cargo test --workspace round_end`
+（轮末迁移与自触发判断）。
+
 ## 7. CLI 与事件扩展
 
 - 新子命令 `hoverstare develop`：从 `GITHUB_EVENT_PATH` 解析

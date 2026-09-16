@@ -270,6 +270,16 @@ cargo fmt && cargo clippy --workspace --all-targets -- -D warnings
     评论里的来源行**（`本轮构建自 <短 sha>（来源：流程 pin）`），短 sha 与 PR body 标记一致
     即本轮确实构建于该版本；`git log --format='%an <%ae>%n%b'` 看作者与
     `Co-authored-by: hoverstare[bot]` 尾注。
+33. **在 PR 对话里核验自触发链**：自触发链不在 Actions 日志里，全在 PR 评论串上，
+    四看即可——(1) 每轮报告的**队列状态行**（`pending` / `running` / `failed` 计数，人话
+    渲染为 `N 待执行 / N 进行中 / N 失败`；有在跑的就点名 `▶︎ 正在跑：#<id> <摘要>`）；
+    (2) 每条自触发评论都以 `@hoverstare continue`
+    开头（正文恰好是该命令，见 spec 11 §6）；(3) 下一轮报告里上一条条目**已从"正在跑"
+    翻成"已完成"**（或 `failed`——失败即停，不会再自触发），并点出本轮执行的是哪条
+    **来源评论 id**（`▶︎ 本轮执行 #<id> <摘要>`，可回读被执行的评论）；(4) **队列排空后不再出现
+    `@hoverstare continue`**——链只到无人处，绝不空转。若"一次跑两条 / 漏跑 / 空队列还在
+    continue"，先对照 §7 #10（并发组）与队列的 claim/gate（`devqueue::precheck` /
+    `plan_round`）。
 
 ## 7.5 Dogfood 验证手册（开发模式端到端怎么测）
 
