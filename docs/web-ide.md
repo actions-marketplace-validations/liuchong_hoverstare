@@ -72,6 +72,69 @@ the backlog for develop-mode UX, not a change to “don’t auto-fix CI”.
 **Do not build:** auto-starting a develop round because CI went red;
 `pull_request_target` auto-approvers.
 
+## Commits: identity and signing
+
+Develop-mode commits are made by the Action, so you decide whose name they carry
+(`commit_identity`, `commit_author`) and whether they are signed.
+
+### Identity
+
+| `commit_identity` | author | message trailer |
+|---|---|---|
+| `author` | the person who triggered the round | — |
+| `bot` | `hoverstare[bot]` | — |
+| `coauthor` (default) | the person who triggered the round | `Co-authored-by: hoverstare[bot] …` |
+
+- `commit_author = "Name <email>"` overrides the author. The override also
+  applies to self-triggered rounds and to local `hoverstare develop --task`
+  runs, which have no human trigger.
+- When the author is overridden, the **committer is that same identity**, not
+  the bot. GitHub verifies a signature against the *committer*, and an app
+  account cannot hold signing keys: with the bot as committer even a correctly
+  signed commit is reported as unverified (`unknown_key`). If you want the
+  green "Verified" badge, set `commit_author` to the account that owns the
+  signing key.
+- Pushing always uses the write token (`GH_PAT`, or an app token with
+  `contents: write`); the settings above only decide how the commit object
+  looks.
+
+### Signing (GPG)
+
+Without the secrets below nothing changes: commits are unsigned.
+
+1. Use a key whose capabilities include signing (`S`; sign-only is fine).
+   CI cannot answer a passphrase prompt, so either use a passphrase-less key or
+   provide the passphrase too (the workflow wraps gpg in loopback mode).
+2. Store the **private** key as a repository secret:
+   ```bash
+   gpg --armor --export-secret-keys <KEY_ID> \
+     | gh secret set HOVERSTARE_GPG_PRIVATE_KEY
+   # only when the key has a passphrase:
+   printf '%s' '<passphrase>' | gh secret set HOVERSTARE_GPG_PASSPHRASE
+   ```
+3. Add the **public** key to the GitHub account of the commit author
+   (Settings → SSH and GPG keys → New GPG key). Until you do, commits are
+   signed but GitHub shows them as unverified.
+4. The workflow imports the key, sets `user.signingkey` and
+   `commit.gpgsign`, then makes one empty self-check commit: if that commit
+   does not come back signed, the run fails loudly instead of quietly producing
+   unsigned history.
+
+Keep a copy of the private key you can restore from (a password manager, or an
+export encrypted to your own key): repository secrets cannot be read back. To
+stop using it, delete the secret, remove the public key from the account, and
+delete the key locally.
+
+### Verifying
+
+```bash
+git log -1 --format='%G?'   # G/U = signed here, N = not signed
+gh api repos/<owner>/<repo>/commits/<sha> --jq '.commit.verification'
+#   {"verified":true, "reason":"valid"}        key is on the account
+#   {"verified":false,"reason":"unknown_key"}  committer does not own the key
+#   {"verified":false,"reason":"unsigned"}     no signing key configured
+```
+
 ## Demo notes from #13 / #14
 
 - Specs first, then code: unmentioned finding-thread replies, in-thread

@@ -149,7 +149,6 @@ max_rounds = 0
 max_output_tokens = 0                 # 单次调用输出上限；0 = 由窗口推导（window/16，下限 4096、上限 65536）；思考模型的推理 token 计入
 commit_identity = "coauthor"          # 开发模式 commit 身份：author（触发者）/ bot（hoverstare[bot]）/ coauthor（触发者 + Co-authored-by trailer）；默认 coauthor
 commit_author = ""                   # 可选 "Name <email>" 覆盖；留空用 <login>@users.noreply.github.com
-# commit_author = "Alice <alice@example.com>"   # 可选，形如 "Name <email>"；留空则用触发者身份
 instructions = ""                     # 团队特定关注点，注入系统提示
 ```
 
@@ -233,7 +232,7 @@ HoverStare 还能**开发**——issue 和 PR 就是一个对话驱动的开发�
 
 - 只有仓库协作者可以下达命令；fork PR 不在范围内。
 - bot 开出的 PR 上，`pull_request` 检查可能出现 **1 workflow awaiting approval**。这是 GitHub 的 maintainer 审批闸门（见下方 FAQ），不是缺 LLM 密钥。
-- 大任务会被预算切片成多轮，bot 会自动续轮（每个 PR 最多 10 轮）。bot 不能执行构建/测试。Checks 红了时，把失败 job 的日志贴进 `@hoverstare` 评论——它不会自己去拉 Actions 日志。只开浏览器的用法、黄条和 dogfood 记录见 [`docs/web-ide.zh-CN.md`](../web-ide.zh-CN.md)。
+- 大任务会被预算切片成多轮，bot 会自动续轮（每个 PR 最多 10 轮）。bot 不能执行构建/测试。Checks 红了时，把失败 job 的日志贴进 `@hoverstare` 评论——它不会自己去拉 Actions 日志。只开浏览器的用法、黄条和 dogfood 记录见 [`docs/web-ide.zh-CN.md`](../web-ide.zh-CN.md)。提交身份与 GPG 签名见 [提交身份与签名](../web-ide.zh-CN.md#提交身份与签名)。
 
 ## 常见问题
 

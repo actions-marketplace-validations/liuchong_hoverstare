@@ -160,7 +160,6 @@ max_rounds = 0
 max_output_tokens = 0                 # лимит вывода на один вызов; 0 = из окна (window/16, мин. 4096, макс. 65536); токены рассуждений учитываются
 commit_identity = "coauthor"          # идентичность commit в режиме разработки: author (триггер) / bot (hoverstare[bot]) / coauthor (триггер + Co-authored-by trailer); по умолчанию coauthor
 commit_author = ""                   # необязательное "Name <email>"; пусто = <login>@users.noreply.github.com
-# commit_author = "Alice <alice@example.com>"   # опционально "Name <email>"; пусто -> идентичность триггера
 instructions = ""                     # фокус ревью команды, добавляется в системный промпт
 ```
 

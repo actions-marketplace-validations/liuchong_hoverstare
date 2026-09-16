@@ -160,7 +160,6 @@ max_rounds = 0
 max_output_tokens = 0                 # per-call output cap; 0 = derived from the window (window/16, min 4096, max 65536); reasoning tokens count
 commit_identity = "coauthor"          # develop commit identity: author (the trigger) / bot (hoverstare[bot]) / coauthor (trigger + Co-authored-by trailer); default coauthor
 commit_author = ""                   # optional "Name <email>" override; empty uses <login>@users.noreply.github.com
-# commit_author = "Alice <alice@example.com>"   # optional "Name <email>"; empty -> use the trigger's identity
 instructions = ""                     # team-specific review focus, injected into the system prompt
 ```
 
@@ -269,6 +268,7 @@ events: a place where you actually build the feature, end to end, in the open.
   paste the job log into an `@hoverstare` comment — the agent does not fetch
   Actions logs. Browser-only loop, approval banner, and dogfood notes:
   [`docs/web-ide.md`](docs/web-ide.md).
+- Commit identity and signing: [`docs/web-ide.md`](docs/web-ide.md#commits-identity-and-signing).
 
 ## FAQ
 

@@ -61,6 +61,58 @@ workflow。PR 里改的 job `if` 只有合进默认分支之后，评论触发�
 
 **不要做：** CI 一红就自动开开发轮；用 `pull_request_target` 自动批准别人的 run。
 
+## 提交身份与签名
+
+开发模式的提交由 Action 产生，所以"提交挂谁的名字"（`commit_identity`、`commit_author`）和
+"是否签名"都由你配置。
+
+### 身份
+
+| `commit_identity` | 作者 | 提交信息尾注 |
+|---|---|---|
+| `author` | 触发本轮的人 | — |
+| `bot` | `hoverstare[bot]` | — |
+| `coauthor`（默认） | 触发本轮的人 | `Co-authored-by: hoverstare[bot] …` |
+
+- `commit_author = "Name <email>"` 覆盖作者；该覆盖**同样作用于自触发轮与本地
+  `hoverstare develop --task`**（这两种情况没有人类触发者）。
+- 覆盖作者时，**committer 也用同一身份**（不是 bot）。原因：GitHub 按 **committer** 校验签名，
+  而 App 账号无法持有签名密钥——committer 是 bot 时，即使签名正确也显示未验证（`unknown_key`）。
+  想要绿色"已验证"徽章，就把 `commit_author` 配成持有签名密钥的账号。
+- 推送始终走写令牌（`GH_PAT`，或具备 `contents: write` 的 App token）；上面的设置只决定提交对象
+  长什么样。
+
+### 签名（GPG）
+
+不配置下面的 secret 时行为不变（提交不签名）。
+
+1. 用一把具备签名能力的密钥（`S`，仅签名用途即可）。CI 无法交互输入口令：要么用无口令密钥，
+   要么同时提供口令（workflow 会把 gpg 包成 loopback 模式）。
+2. 把**私钥**放进仓库 secret：
+   ```bash
+   gpg --armor --export-secret-keys <KEY_ID> \
+     | gh secret set HOVERSTARE_GPG_PRIVATE_KEY
+   # 仅当密钥带口令时：
+   printf '%s' '<口令>' | gh secret set HOVERSTARE_GPG_PASSPHRASE
+   ```
+3. 把**公钥**加到提交作者的 GitHub 账号上（Settings → SSH and GPG keys → New GPG key）。
+   没做这一步时，提交是"已签名但未验证"。
+4. workflow 会导入密钥、设置 `user.signingkey` 与 `commit.gpgsign`，然后做一次**空提交自检**：
+   如果那次提交没有签上，整个 run 直接失败，而不是静默产出未签名历史。
+
+请自留一份可恢复的私钥副本（口令管理器，或用你自己的密钥加密后导出）：**仓库 secret 读不回来**。
+要停用它：删掉 secret、从账号移除公钥、再删本地密钥。
+
+### 如何验证
+
+```bash
+git log -1 --format='%G?'   # G/U = 本地能验签，N = 未签名
+gh api repos/<owner>/<repo>/commits/<sha> --jq '.commit.verification'
+#   {"verified":true, "reason":"valid"}       密钥在账号上
+#   {"verified":false,"reason":"unknown_key"} committer 不拥有该密钥
+#   {"verified":false,"reason":"unsigned"}    未配置签名密钥
+```
+
 ## #13 / #14 示范里实际发生的事
 
 - 先改 spec，再写代码：无 `@mention` 的 finding 线程讨论、线程内 `explain`、
