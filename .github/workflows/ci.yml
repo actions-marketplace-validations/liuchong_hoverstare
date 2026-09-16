@@ -18,7 +18,10 @@ jobs:
       - name: actionlint
         run: |
           set -euo pipefail
-          docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint:latest -color
+          # 只拦"工作流无效"这一类错误（表达式上下文、schema）：这正是让 dogfood 静默失效的
+          # 那种。shellcheck 的风格提示（SC2129 重定向、SC2016 单引号）不是这里的门禁对象，
+          # 否则每次都要为风格红一次。把空值传给 -shellcheck 即关闭该集成。
+          docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint:latest -color -shellcheck=
 
   check:
     runs-on: ubuntu-latest
