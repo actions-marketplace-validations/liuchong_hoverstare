@@ -188,8 +188,26 @@ jobs:
               exit 1
             fi
           fi
-          git fetch --no-tags --quiet origin "$ref" || true
-          commit=$(git rev-parse --verify --quiet "${ref}^{commit}" || true)
+          # Resolve the pinned ref to a commit. A `pull_request` checkout is a
+          # detached merge commit with no local master or tags, so fetch the
+          # right shape first and look the object up in every place it can live:
+          # this is what broke every review run on a PR whose flow was pinned to
+          # `master` ("hoverstare-pin ref not found: master").
+          case "$ref" in
+            master)
+              git fetch --no-tags --quiet "origin" \
+                "${DEFAULT_BRANCH}:refs/remotes/origin/${DEFAULT_BRANCH}" || true
+              ;;
+            v[0-9]*)
+              git fetch --no-tags --quiet origin "refs/tags/${ref}:refs/tags/${ref}" || true
+              ;;
+            *)
+              git fetch --no-tags --quiet origin "$ref" || true
+              ;;
+          esac
+          commit=$(git rev-parse --verify --quiet "${ref}^{commit}" \
+                || git rev-parse --verify --quiet "refs/remotes/origin/${ref}^{commit}" \
+                || git rev-parse --verify --quiet "refs/tags/${ref}^{commit}" || true)
           if [ -z "$commit" ]; then
             echo "::error::hoverstare-pin ref not found: $ref"
             exit 1
