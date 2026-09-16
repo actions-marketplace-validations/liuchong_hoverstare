@@ -82,27 +82,42 @@ jobs:
           fetch-tags: true # 版本可用 tag 指定（自救时）
           persist-credentials: false
 
-      # 版本自救（spec 08）：默认用事件所在版本构建；PR body / 触发评论里写
-      # `hoverstare-pin: <ref>`，或手动触发时填 version，就改成构建那个 ref。
-      # 工作区仍然是被处理的那份代码（工具读的是它），只有二进制来自 pin。
+      # 版本自救（spec 08）：默认用事件所在版本构建；PR body / 任意近期评论 / 触发
+      # 评论里写 `hoverstare-pin: <ref>`，或手动触发时填 version，就改成构建那个 ref。
+      # 评论是"可编辑"的：所以不只读触发的那一条，而是读最近若干条评论（新→旧），
+      # 让改过/较早写下的标记同样生效。工作区仍是被处理的那份代码，只有二进制来自 pin。
       - name: Resolve source ref
         id: source
         shell: bash
         env:
+          GH_TOKEN: ${{ github.token }}
           MODE: ${{ github.event_name == 'workflow_dispatch' && 'dispatch' || 'event' }}
           DISPATCH_VERSION: ${{ inputs.version }}
           ISSUE_BODY: ${{ github.event.issue.body }}
           PR_BODY: ${{ github.event.pull_request.body }}
           COMMENTS: ${{ github.event.comment.body }}
           REVIEW_BODY: ${{ github.event.review.body }}
+          NUMBER: ${{ github.event.issue.number || github.event.pull_request.number || inputs.pr }}
         run: |
           set -euo pipefail
+          extract() {
+            printf '%s' "$1" \
+              | grep -oiE 'hoverstare-pin:[[:space:]]*[A-Za-z0-9._/-]+' \
+              | head -1 | sed -E 's/.*:[[:space:]]*//' || true
+          }
           ref="$DISPATCH_VERSION"
+          # 最近评论优先（含触发评论本身），新→旧取第一条带标记的。
+          if [ -z "$ref" ] && [ -n "$NUMBER" ]; then
+            bodies=$(gh api "repos/$GITHUB_REPOSITORY/issues/$NUMBER/comments?per_page=30" \
+              --jq '.[].body' 2>/dev/null | tac || true)
+            for text in "$COMMENTS" "$bodies"; do
+              found=$(extract "$text")
+              if [ -n "$found" ]; then ref="$found"; break; fi
+            done
+          fi
           if [ -z "$ref" ]; then
-            for text in "$COMMENTS" "$PR_BODY" "$ISSUE_BODY" "$REVIEW_BODY"; do
-              found=$(printf '%s' "$text" \
-                | grep -oiE 'hoverstare-pin:[[:space:]]*[A-Za-z0-9._/-]+' \
-                | head -1 | sed -E 's/.*:[[:space:]]*//' || true)
+            for text in "$COMMENTS" "$REVIEW_BODY" "$PR_BODY" "$ISSUE_BODY"; do
+              found=$(extract "$text")
               if [ -n "$found" ]; then ref="$found"; break; fi
             done
           fi

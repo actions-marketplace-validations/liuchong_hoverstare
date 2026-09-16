@@ -76,12 +76,23 @@ pub struct ToolCallRecord {
 pub struct Usage {
     pub input_tokens: u64,
     pub output_tokens: u64,
+    /// Input tokens the provider served from its own prompt cache. Every call
+    /// re-sends the conversation, so this is what makes a long agentic run
+    /// affordable; a run whose count stays at zero is paying full price for a
+    /// prefix it already sent.
+    pub cached_input_tokens: u64,
 }
 
 impl Usage {
     pub fn add(&mut self, other: Usage) {
         self.input_tokens += other.input_tokens;
         self.output_tokens += other.output_tokens;
+        self.cached_input_tokens += other.cached_input_tokens;
+    }
+
+    /// Share of the input the provider cached, if it reported any input at all.
+    pub fn cache_hit_ratio(&self) -> Option<f64> {
+        (self.input_tokens > 0).then(|| self.cached_input_tokens as f64 / self.input_tokens as f64)
     }
 }
 

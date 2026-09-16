@@ -404,6 +404,14 @@ impl AgentLoop {
                     .await
                 {
                     Ok(reply) => {
+                        if reply.usage.input_tokens > 0 {
+                            debug!(
+                                "model call: {} input token(s), {} cached, {} output",
+                                reply.usage.input_tokens,
+                                reply.usage.cached_input_tokens,
+                                reply.usage.output_tokens
+                            );
+                        }
                         usage.add(reply.usage);
                         if reply.tool_calls.is_empty() {
                             if reply.text.trim().is_empty() {
@@ -590,6 +598,16 @@ impl AgentLoop {
                     Ok(()) => debug!("removed compaction dump {}", path.display()),
                     Err(e) => warn!("could not remove compaction dump {}: {e}", path.display()),
                 }
+            }
+            match usage.cache_hit_ratio() {
+                Some(ratio) => info!(
+                    "run used {} input token(s) ({} cached, {:.0}%), {} output",
+                    usage.input_tokens,
+                    usage.cached_input_tokens,
+                    ratio * 100.0,
+                    usage.output_tokens
+                ),
+                None => {}
             }
             outcome.map(|(raw_output, tool_trace, usage)| ReviewRun {
                 raw_output,
@@ -1170,6 +1188,90 @@ mod tests {
             )),
             "the retry asks the model to answer"
         );
+    }
+
+    #[tokio::test]
+    async fn each_call_extends_the_previous_one_so_the_prefix_stays_cacheable() {
+        // A provider caches the longest shared prefix of consecutive requests.
+        // Rebuilding or reordering history between calls would throw that away
+        // and make every call pay full price for the conversation again.
+        let (_dir, shared) = two_file_workspace();
+        let client = ScriptedClient::new(vec![scripted(|index, _call| match index {
+            0 => Ok(tool_reply(
+                "1",
+                "read_file",
+                serde_json::json!({"path": "a.rs"}),
+            )),
+            1 => Ok(tool_reply(
+                "2",
+                "read_file",
+                serde_json::json!({"path": "b.rs"}),
+            )),
+            _ => Ok(reply("final")),
+        })]);
+        let run = loop_with(client.clone(), 100_000)
+            .review(request(Some(shared), 8))
+            .await
+            .unwrap();
+        assert_eq!(run.raw_output, "final");
+        let calls = client.calls();
+        assert!(calls.len() >= 3);
+        for pair in calls.windows(2) {
+            let (previous, next) = (&pair[0].messages, &pair[1].messages);
+            assert!(
+                next.len() >= previous.len(),
+                "history must grow, never shrink"
+            );
+            for (index, item) in previous.iter().enumerate() {
+                let same = match (item, &next[index]) {
+                    (
+                        ConversationItem::User { text: left },
+                        ConversationItem::User { text: right },
+                    ) => left == right,
+                    (
+                        ConversationItem::Assistant {
+                            tool_calls: left, ..
+                        },
+                        ConversationItem::Assistant {
+                            tool_calls: right, ..
+                        },
+                    ) => {
+                        left.len() == right.len()
+                            && left
+                                .iter()
+                                .zip(right)
+                                .all(|(l, r)| l.id == r.id && l.name == r.name)
+                    }
+                    (
+                        ConversationItem::ToolResult { call_id: left, .. },
+                        ConversationItem::ToolResult { call_id: right, .. },
+                    ) => left == right,
+                    _ => false,
+                };
+                assert!(same, "message {index} changed between calls");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn the_run_reports_what_the_provider_cached() {
+        let client = ScriptedClient::new(vec![Box::new(|_call, _| {
+            Ok(ChatReply {
+                text: "done".to_string(),
+                usage: Usage {
+                    input_tokens: 1_000,
+                    output_tokens: 20,
+                    cached_input_tokens: 750,
+                },
+                ..Default::default()
+            })
+        })]);
+        let run = loop_with(client.clone(), 100_000)
+            .review(request(None, 0))
+            .await
+            .unwrap();
+        assert_eq!(run.usage.cached_input_tokens, 750);
+        assert_eq!(run.usage.cache_hit_ratio(), Some(0.75));
     }
 
     #[tokio::test]
