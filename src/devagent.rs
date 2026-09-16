@@ -59,6 +59,11 @@ pub struct DevMarker {
     /// Queue item this round worked on (spec 11 §6 artifact gate).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task: Option<u64>,
+    /// The tool budget ran out this round. A `nochange` round with this set is
+    /// unfinished and may be continued; without it the round ended on its own
+    /// and the chain stops (spec 11 §6).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget: Option<bool>,
 }
 
 pub fn marker_text(marker: &DevMarker) -> String {
@@ -315,6 +320,7 @@ async fn discuss_round(
         sha: None,
         st: None,
         task: None,
+        budget: None,
     };
     gh.create_issue_comment(
         repo,
@@ -438,6 +444,7 @@ async fn implement_issue(
         sha: None,
         st: None,
         task: None,
+        budget: None,
     };
     gh.create_issue_comment(
         repo,
@@ -558,6 +565,7 @@ async fn pr_dev_round(
         st: m.st.as_deref().and_then(Outcome::parse),
         sha: m.sha,
         task: m.task,
+        budget_exhausted: m.budget.unwrap_or(false),
     });
     match precheck(round, MAX_PR_ROUNDS, ev.claimed_round(), record.as_ref()) {
         // A newer run already completed this round: no comment, no commit, no
@@ -735,6 +743,7 @@ async fn pr_dev_round(
         sha: outcome.commit.clone(),
         st: Some(outcome_st.as_str().to_string()),
         task: (src != 0).then_some(src),
+        budget: outcome.budget_exhausted.then_some(true),
     };
     let head = if ok {
         "本轮改动已提交并推送："
@@ -1269,6 +1278,7 @@ mod tests {
             sha: Some("c0ffee".into()),
             st: None,
             task: None,
+            budget: None,
         };
         let text = marker_text(&m);
         assert_eq!(parse_marker(&format!("reply body\n\n{text}")), Some(m));
@@ -1282,6 +1292,7 @@ mod tests {
                     sha: None,
                     st: None,
                     task: None,
+                    budget: None,
                 }),
             ),
             comment(2, "plain reply"),
@@ -1294,6 +1305,7 @@ mod tests {
                     sha: None,
                     st: None,
                     task: None,
+                    budget: None,
                 }),
             ),
         ];
@@ -1337,6 +1349,7 @@ mod tests {
                     sha: None,
                     st: None,
                     task: None,
+                    budget: None,
                 })
             ),
         ));

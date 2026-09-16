@@ -113,7 +113,7 @@ crates/bugbot/         # 别名 crate：re-export + 同入口二进制（同步�
 
 ```bash
 cargo build --workspace
-cargo test --workspace                          # 218 项（单元 + httpmock 合约）
+cargo test --workspace                          # 219 项（单元 + httpmock 合约）
 cargo fmt && cargo clippy --workspace --all-targets -- -D warnings
 ```
 

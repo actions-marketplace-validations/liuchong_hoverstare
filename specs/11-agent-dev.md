@@ -167,8 +167,11 @@ GITHUB_TOKEN 的 push 不触发 CI，会导致 checks 不跑、无法合并。
 5. **claim 守卫**：自触发评论携带"刚完成的轮次"；若最新标记轮次 ≥ 它声称的
    轮次，则本轮**静默退出**（被更新的 run 取代，不写任何东西）。
    锚点：`devqueue::tests::stale_claim_and_cap_are_prechecked`。
-6. **artifact gate**：上一轮记录的 sha 必须是当前分支 head 的**祖先**，否则停止
-   （分支被改写时不叠加工作）；仅约束自驱动轮，人类指令照常执行。
+6. **artifact gate 与 failure-stop**：仅约束自驱动轮（人类指令照常执行），判据分三种：
+   - 上一轮 `st=ok` 且记录了 sha：该 sha 必须是当前 head 的**祖先**，否则停止（分支被改写时不叠加）；
+   - 上一轮 `st=nochange` **且预算耗尽**（marker 的 `budget` 位）：允许续轮——这一轮是"被预算打断"
+     而不是"做完了没得做"，条目也仍是 pending；否则一条"读了 40 次没落地"的轮次会让链断在这里；
+   - 上一轮 `st=nochange` 且不是被预算打断、或 `st=failed`：停止（failure-stop，不自动重试）。
    锚点：`devqueue::tests::artifact_gate_requires_ok_and_ancestor`。
 7. **合并门**：队列仍有 open 条目时 `@hoverstare merge` **拒绝**并原样贴出
    `@hoverstare queue` 的清单；`@hoverstare merge force` 放行并说明丢弃条数。

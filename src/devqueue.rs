@@ -354,6 +354,9 @@ pub struct RoundRecord {
     pub sha: Option<String>,
     /// Queue item the last round worked on (`None` = not a queue round).
     pub task: Option<u64>,
+    /// Whether the last round ran out of tool budget (absent in older markers,
+    /// which read as "no": a round that ended on its own must not be retried).
+    pub budget_exhausted: bool,
 }
 
 /// Why a round has nothing to do.
@@ -464,10 +467,18 @@ pub fn plan_round(req: &RoundRequest<'_>) -> RoundPlan {
         && let Some(latest) = req.latest
         && latest.task.is_some()
     {
-        if latest.st != Some(Outcome::Ok) {
-            return RoundPlan::Idle(Idle::PreviousFailed);
+        match latest.st {
+            Some(Outcome::Ok) => {}
+            // A round cut short by the budget with nothing committed is exactly
+            // what a continuation is for: the item stayed queued (spec 11 §6
+            // item 4), so the retry is legitimate. A round that ended on its own
+            // with no change has nothing left to continue.
+            Some(Outcome::Nochange) if latest.budget_exhausted => {}
+            _ => return RoundPlan::Idle(Idle::PreviousFailed),
         }
-        if latest.sha.is_none() || !req.recorded_on_branch {
+        // Only a commit that claims to exist has to still be reachable: there is
+        // nothing to verify when the previous round committed nothing.
+        if latest.sha.is_some() && !req.recorded_on_branch {
             return RoundPlan::Idle(Idle::PreviousNotOnBranch);
         }
     }
@@ -680,6 +691,7 @@ mod tests {
             st,
             sha: sha.map(String::from),
             task,
+            budget_exhausted: false,
         }
     }
 
@@ -860,6 +872,62 @@ mod tests {
             }
             other => panic!("expected a run, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn the_gate_lets_a_budget_cut_continuation_through_but_not_a_concluded_one() {
+        let plan = |st: Option<Outcome>, sha: Option<&str>, budget: bool, on_branch: bool| {
+            let latest = RoundRecord {
+                r: 2,
+                st,
+                sha: sha.map(str::to_string),
+                task: Some(7),
+                budget_exhausted: budget,
+            };
+            // The item the previous round ran is still queued, and its
+            // instruction is read back from the comment that carries it.
+            let mut queue = QueueState::new();
+            queue
+                .enqueue(7, ItemKind::Human, "继续那件没做完的活")
+                .unwrap();
+            let comments = vec![comment(7, "@hoverstare 继续那件没做完的活")];
+            plan_round(&RoundRequest {
+                round: 3,
+                max_rounds: 10,
+                // A self-trigger claims the round it asks for (`marker.r + 1`).
+                claim: Some(3),
+                latest: Some(&latest),
+                queue: &queue,
+                recorded_on_branch: on_branch,
+                comments: &comments,
+                direct: None,
+            })
+        };
+        // Cut short, nothing committed: run the same pending item again.
+        assert!(matches!(
+            plan(Some(Outcome::Nochange), None, true, false),
+            RoundPlan::Run(_)
+        ));
+        // Ended on its own with nothing to do: stop in front of the human.
+        assert_eq!(
+            plan(Some(Outcome::Nochange), None, false, false),
+            RoundPlan::Idle(Idle::PreviousFailed)
+        );
+        // A hard failure stops the chain.
+        assert_eq!(
+            plan(Some(Outcome::Failed), None, true, false),
+            RoundPlan::Idle(Idle::PreviousFailed)
+        );
+        // A recorded commit that is no longer on the branch still stops it.
+        assert_eq!(
+            plan(Some(Outcome::Ok), Some("abc123"), false, false),
+            RoundPlan::Idle(Idle::PreviousNotOnBranch)
+        );
+        // A landed commit that is still there runs.
+        assert!(matches!(
+            plan(Some(Outcome::Ok), Some("abc123"), false, true),
+            RoundPlan::Run(_)
+        ));
     }
 
     #[test]
