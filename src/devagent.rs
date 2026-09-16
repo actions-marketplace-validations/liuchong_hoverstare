@@ -15,8 +15,8 @@ use crate::agent::{AgentBackend, Budget, ReviewRequest, ToolRegistry};
 use crate::config::{Actor, Config, PermissionKey};
 use crate::develop::{self};
 use crate::devqueue::{
-    Idle, ItemState, MergeGate, QUEUE_PREFIX, QueueState, RoundRecord, checklist, merge_gate,
-    precheck, summary_line,
+    Idle, ItemKind, ItemState, MergeGate, Outcome, QUEUE_PREFIX, QueueState, RoundRecord,
+    checklist, instruction, merge_gate, precheck, self_trigger, summary_line,
 };
 use crate::event::{DevEvent, DevKind};
 use crate::git::GitRepo;
@@ -53,6 +53,12 @@ pub struct DevMarker {
     /// Commit pushed by this round (artifact gate of the next round).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sha: Option<String>,
+    /// How this round ended (`ok`/`nochange`/`failed`; spec 11 §6 failure-stop).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub st: Option<String>,
+    /// Queue item this round worked on (spec 11 §6 artifact gate).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task: Option<u64>,
 }
 
 pub fn marker_text(marker: &DevMarker) -> String {
@@ -307,6 +313,8 @@ async fn discuss_round(
         r: round,
         pr: None,
         sha: None,
+        st: None,
+        task: None,
     };
     gh.create_issue_comment(
         repo,
@@ -421,6 +429,8 @@ async fn implement_issue(
         r: 0,
         pr: Some(pr.number),
         sha: None,
+        st: None,
+        task: None,
     };
     gh.create_issue_comment(
         repo,
@@ -463,31 +473,47 @@ async fn pr_flow(
         DevCommand::Merge { force } => merge_flow(cfg, gh, repo, ev, &pr, force).await,
         DevCommand::Queue => queue_flow(gh, repo, ev).await,
         DevCommand::Help => unreachable!("handled in run_event"),
-        DevCommand::Go => {
-            pr_dev_round(
-                cfg,
-                gh,
-                repo,
-                ev,
-                &pr,
-                "continue the current task",
-                !ev.is_self_trigger(),
-            )
-            .await
+        // A continuation pulls the queue's next item (spec 11 §6); the bot's
+        // `@hoverstare continue` self-trigger parses as a task, so route it here
+        // rather than enqueueing it as a human instruction.
+        DevCommand::Task(_) if ev.is_self_trigger() => {
+            pr_dev_round(cfg, gh, repo, ev, &pr, RoundTrigger::Continue).await
         }
-        DevCommand::Task(text) => pr_dev_round(cfg, gh, repo, ev, &pr, &text, true).await,
+        DevCommand::Go => pr_dev_round(cfg, gh, repo, ev, &pr, RoundTrigger::Continue).await,
+        DevCommand::Task(text) => {
+            pr_dev_round(cfg, gh, repo, ev, &pr, RoundTrigger::Instruction(&text)).await
+        }
     }
 }
 
-/// One dev round on the PR branch: sync to remote head, develop, push, report.
+/// What starts a dev round (spec 11 §6 queue contract).
+enum RoundTrigger<'a> {
+    /// A human instruction comment: enqueue it (idempotent by comment id), then
+    /// run the queue's next item.
+    Instruction(&'a str),
+    /// A continuation — the bot's `@hoverstare continue` self-trigger or a human
+    /// `@hoverstare go`: run the queue's next item.
+    Continue,
+}
+
+/// The queue's next item whose source comment still carries an instruction
+/// (spec 11 §6 dequeue order).
+fn dequeue(queue: &QueueState, comments: &[IssueComment]) -> Option<(u64, String)> {
+    queue
+        .ordered()
+        .into_iter()
+        .find_map(|item| instruction(comments, item.src).map(|text| (item.src, text)))
+}
+
+/// One dev round on the PR branch: pick the queued task, sync to remote head,
+/// develop, push, report (spec 11 §6).
 async fn pr_dev_round(
     cfg: &Config,
     gh: &GitHubClient,
     repo: &Repo,
     ev: &DevEvent,
     pr: &PullRequest,
-    instruction: &str,
-    human: bool,
+    trigger: RoundTrigger<'_>,
 ) -> anyhow::Result<String> {
     let comments = gh.list_issue_comments(repo, ev.number).await?;
     let latest = latest_marker(&comments);
@@ -497,8 +523,9 @@ async fn pr_dev_round(
     // human instruction claims nothing and always gets to run.
     let record = latest.map(|m| RoundRecord {
         r: m.r,
+        st: m.st.as_deref().and_then(Outcome::parse),
         sha: m.sha,
-        ..Default::default()
+        task: m.task,
     });
     match precheck(round, MAX_PR_ROUNDS, ev.claimed_round(), record.as_ref()) {
         // A newer run already completed this round: no comment, no commit, no
@@ -506,7 +533,7 @@ async fn pr_dev_round(
         Some(Idle::StaleClaim) => return Ok("stale claim: nothing written".into()),
         // The round cap is the fuse for the automatic chain; a maintainer's
         // request may still start a round (spec 11 §6).
-        Some(_) if !round_allowed(round, human) => {
+        Some(_) if !round_allowed(round, !ev.is_self_trigger()) => {
             gh.create_issue_comment(
                 repo,
                 ev.number,
@@ -517,6 +544,40 @@ async fn pr_dev_round(
         }
         Some(_) | None => {}
     }
+
+    // Queue (spec 11 §6): a human instruction joins the queue (idempotent by
+    // comment id); a continuation pulls the queue's next open item. A review
+    // body has no comment id, so it runs directly, outside the queue.
+    let mut queue = QueueState::latest(&comments).unwrap_or_default();
+    let mut direct: Option<String> = None;
+    if let RoundTrigger::Instruction(text) = trigger {
+        match ev.comment_id {
+            Some(id) => {
+                if let Err(err) = queue.enqueue(id, ItemKind::Human, text) {
+                    // A refused instruction is reported loudly, never dropped.
+                    gh.create_issue_comment(repo, ev.number, &err.message())
+                        .await?;
+                    return Ok("instruction not queued".into());
+                }
+            }
+            None => direct = Some(text.to_string()),
+        }
+    }
+    let (src, instruction_text) = match direct.as_deref().filter(|t| !t.trim().is_empty()) {
+        Some(text) => (0u64, text.to_string()),
+        None => match dequeue(&queue, &comments) {
+            Some((src, text)) => (src, text),
+            None => {
+                let msg = if queue.open_count() == 0 {
+                    Idle::EmptyQueue.message()
+                } else {
+                    "队列中的任务源评论已不可见，无法执行；请重新下达指令。"
+                };
+                gh.create_issue_comment(repo, ev.number, msg).await?;
+                return Ok("nothing queued to run".into());
+            }
+        },
+    };
 
     let git = GitRepo::open(&cfg.workspace)?;
     let token = dev_token(cfg);
@@ -547,6 +608,22 @@ async fn pr_dev_round(
         gh.create_issue_comment(repo, ev.number, Idle::PreviousNotOnBranch.message())
             .await?;
         return Ok(format!("previous commit {sha} is not on {branch}"));
+    }
+    // Failure-stop (spec 11 §6): a self-driving continuation only starts when the
+    // previous queued task actually landed. Human instructions always run.
+    if ev.claimed_round().is_some()
+        && let Some(rec) = &record
+        && rec.task.is_some()
+        && rec.st != Some(Outcome::Ok)
+    {
+        gh.create_issue_comment(repo, ev.number, Idle::PreviousFailed.message())
+            .await?;
+        return Ok("previous round did not land".into());
+    }
+    // Mark the item in flight (spec 11 §6) so a concurrent `@hoverstare queue`
+    // shows what is running; the final state lands with the report below.
+    if src != 0 {
+        queue.set_state(src, ItemState::Running);
     }
 
     // Merge the base branch before developing. A branch that drifted behind its
@@ -591,13 +668,13 @@ async fn pr_dev_round(
     let task = format!(
         "You are developing on the branch `{branch}` of PR #{}.\n\n[Instruction from the PR discussion]\n{}\n\n\
          Implement the instruction now, staying minimal and focused.",
-        ev.number, instruction
+        ev.number, instruction_text
     );
     let backend = RigBackend::from_config(cfg);
     let outcome = develop::run(develop::DevelopRequest {
         workspace: &cfg.workspace,
         task: &task,
-        commit_hint: instruction,
+        commit_hint: &instruction_text,
         dry_run: false,
         backend: &backend,
         model: &cfg.model,
@@ -606,25 +683,39 @@ async fn pr_dev_round(
         commit_identity: commit_identity_for(cfg, &ev.author),
     })
     .await?;
-    let mut pushed = false;
-    if outcome.commit.is_some() {
+    let ok = outcome.commit.is_some();
+    if ok {
         git.push("devpush", branch).await?;
-        pushed = true;
+    }
+    let outcome_st = if ok { Outcome::Ok } else { Outcome::Nochange };
+    // The round's result lands on the queue (spec 11 §6): a landed item is done,
+    // a round that produced nothing is failed — and a failure never releases the
+    // next round. The final queue marker rides with the report (append-only).
+    if src != 0 {
+        queue.set_state(
+            src,
+            if ok {
+                ItemState::Done
+            } else {
+                ItemState::Failed
+            },
+        );
     }
     let marker = DevMarker {
         m: "impl".into(),
         r: round,
         pr: Some(ev.number),
         sha: outcome.commit.clone(),
+        st: Some(outcome_st.as_str().to_string()),
+        task: (src != 0).then_some(src),
     };
-    let head = if pushed {
+    let head = if ok {
         "本轮改动已提交并推送："
     } else {
         "本轮无代码改动。"
     };
     // Queue status rides with the report so a human sees what is still pending
     // or in flight without opening the queue command (spec 11 §6).
-    let queue = QueueState::latest(&comments).unwrap_or_default();
     let queue_note = if queue.open_count() == 0 {
         "队列已空".to_string()
     } else {
@@ -634,17 +725,20 @@ async fn pr_dev_round(
         repo,
         ev.number,
         &format!(
-            "{head}\n\n{}\n\n{queue_note}\n\n{}",
+            "{head}\n\n{}\n\n{queue_note}\n\n{}\n\n{}",
             crate::sanitize::model_text(&outcome.summary),
-            marker_text(&marker)
+            marker_text(&marker),
+            queue.render()
         ),
     )
     .await?;
 
-    // Self-trigger the next round when the budget cut the loop short (spec 11 §6).
+    // Self-trigger the next queued round (spec 11 §6): only progress that landed
+    // pulls the next item, only while the fuse allows and only while work remains.
+    // An empty queue never self-triggers, so the chain ends when the queue drains.
     // The comment rides with this round's marker (first line stays the command),
     // so the next run knows which round it is claiming.
-    if outcome.budget_exhausted && round < MAX_PR_ROUNDS {
+    if self_trigger(round, MAX_PR_ROUNDS, outcome_st, &queue) {
         gh.create_issue_comment(
             repo,
             ev.number,
@@ -652,13 +746,13 @@ async fn pr_dev_round(
         )
         .await?;
         return Ok(format!(
-            "round {round} done; budget exhausted → self-triggered round {}",
+            "round {round} done; self-triggered round {}",
             round + 1
         ));
     }
-    // Say so when the fuse, not the work, is what stopped the chain: otherwise
+    // Say so when the fuse, not the queue, is what stopped the chain: otherwise
     // the thread just goes quiet and a reader cannot tell why.
-    if outcome.budget_exhausted && round >= MAX_PR_ROUNDS {
+    if ok && round >= MAX_PR_ROUNDS && queue.open_count() > 0 {
         gh.create_issue_comment(
             repo,
             ev.number,
@@ -671,15 +765,20 @@ async fn pr_dev_round(
     Ok(format!("round {round} done"))
 }
 
-/// `@hoverstare queue`: paste the visible queue checklist and carry the state
-/// forward as a new marker so the append-only chain stays consistent.
+/// `@hoverstare queue`: paste the visible queue status (counts + checklist) and
+/// carry the state forward as a new marker so the append-only chain stays
+/// consistent.
 async fn queue_flow(gh: &GitHubClient, repo: &Repo, ev: &DevEvent) -> anyhow::Result<String> {
     let comments = gh.list_issue_comments(repo, ev.number).await?;
     let queue = QueueState::latest(&comments).unwrap_or_default();
     let body = if queue.items.is_empty() {
         "队列已空".to_string()
     } else {
-        format!("📋 队列状态：\n\n{}", checklist(&queue, &comments))
+        format!(
+            "{}\n\n{}",
+            summary_line(&queue),
+            checklist(&queue, &comments)
+        )
     };
     gh.create_issue_comment(repo, ev.number, &format!("{body}\n\n{}", queue.render()))
         .await?;
@@ -971,6 +1070,8 @@ mod tests {
             r: 2,
             pr: None,
             sha: Some("c0ffee".into()),
+            st: None,
+            task: None,
         };
         let text = marker_text(&m);
         assert_eq!(parse_marker(&format!("reply body\n\n{text}")), Some(m));
@@ -982,6 +1083,8 @@ mod tests {
                     r: 1,
                     pr: None,
                     sha: None,
+                    st: None,
+                    task: None,
                 }),
             ),
             comment(2, "plain reply"),
@@ -992,6 +1095,8 @@ mod tests {
                     r: 0,
                     pr: Some(7),
                     sha: None,
+                    st: None,
+                    task: None,
                 }),
             ),
         ];
@@ -1032,7 +1137,9 @@ mod tests {
                     m: "plan".into(),
                     r: 9,
                     pr: None,
-                    sha: None
+                    sha: None,
+                    st: None,
+                    task: None,
                 })
             ),
         ));

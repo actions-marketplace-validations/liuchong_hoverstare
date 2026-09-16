@@ -92,6 +92,8 @@ fly deploy
 | `HOVERSTARE_COMPACTION_KEEP_RATIO` | | 压缩后保留最近这段比例的窗口（默认 0.25） |
 | `HOVERSTARE_SUMMARY_MAX_CHARS` | | 模型摘要长度上限（默认 4000） |
 | `HOVERSTARE_MAX_ROUNDS` | | 单次 run 模型调用轮数上限（0 = 由工具预算推导） |
+| `HOVERSTARE_COMMIT_IDENTITY` | | 开发模式提交身份：`author`/`bot`/`coauthor`（默认 `coauthor`） |
+| `HOVERSTARE_COMMIT_AUTHOR` | | 可选提交作者 `Name <email>`（留空用 `<login>@users.noreply.github.com`） |
 | `HOVERSTARE_MAX_OUTPUT_TOKENS` | | 单次调用输出上限（0 = 由窗口推导；推理 token 计入） |
 | `PORT` | | 监听端口（默认 8080） |
 | `HOVERSTARE_SERVE_MAX_JOBS` | | 并发任务上限（默认 4） |

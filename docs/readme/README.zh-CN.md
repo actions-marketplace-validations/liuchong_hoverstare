@@ -146,6 +146,10 @@ compaction_threshold_ratio = 0.75
 compaction_keep_ratio = 0.25
 summary_max_chars = 4000
 max_rounds = 0
+max_output_tokens = 0                 # 单次调用输出上限；0 = 由窗口推导（window/16，下限 4096、上限 65536）；思考模型的推理 token 计入
+commit_identity = "coauthor"          # 开发模式 commit 身份：author（触发者）/ bot（hoverstare[bot]）/ coauthor（触发者 + Co-authored-by trailer）；默认 coauthor
+commit_author = ""                   # 可选 "Name <email>" 覆盖；留空用 <login>@users.noreply.github.com
+# commit_author = "Alice <alice@example.com>"   # 可选，形如 "Name <email>"；留空则用触发者身份
 instructions = ""                     # 团队特定关注点，注入系统提示
 ```
 

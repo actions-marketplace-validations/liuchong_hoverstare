@@ -159,6 +159,10 @@ compaction_threshold_ratio = 0.75
 compaction_keep_ratio = 0.25
 summary_max_chars = 4000
 max_rounds = 0
+max_output_tokens = 0                 # plafond de sortie par appel ; 0 = dérivé de la fenêtre (window/16, min 4096, max 65536) ; les tokens de raisonnement comptent
+commit_identity = "coauthor"          # identité de commit en mode dev : author (le déclencheur) / bot (hoverstare[bot]) / coauthor (déclencheur + trailer Co-authored-by) ; défaut coauthor
+commit_author = ""                   # optionnel "Name <email>"; vide = <login>@users.noreply.github.com
+# commit_author = "Alice <alice@example.com>"   # optionnel « Name <email> » ; vide -> identité du déclencheur
 instructions = ""                     # focus de revue de l'équipe, injecté dans le prompt système
 ```
 

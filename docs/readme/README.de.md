@@ -160,6 +160,9 @@ compaction_threshold_ratio = 0.75
 compaction_keep_ratio = 0.25
 summary_max_chars = 4000
 max_rounds = 0
+max_output_tokens = 0                 # Ausgabelimit pro Aufruf; 0 = aus dem Fenster abgeleitet (window/16, min 4096, max 65536); Reasoning-Tokens zählen mit
+commit_identity = "coauthor"          # Commit-Identität: author (Auslöser) / bot (hoverstare[bot]) / coauthor (Auslöser + Co-Authored-by); Standard coauthor
+commit_author = ""                   # optional "Name <email>"; leer nutzt <login>@users.noreply.github.com
 instructions = ""                     # team-spezifischer Review-Fokus, wird in den Systemprompt injiziert
 ```
 

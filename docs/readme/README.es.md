@@ -159,6 +159,9 @@ compaction_threshold_ratio = 0.75
 compaction_keep_ratio = 0.25
 summary_max_chars = 4000
 max_rounds = 0
+max_output_tokens = 0                 # límite de salida por llamada; 0 = derivado de la ventana (window/16, mín 4096, máx 65536); los tokens de razonamiento cuentan
+commit_identity = "coauthor"          # identidad de commit: author (el disparador) / bot (hoverstare[bot]) / coauthor (disparador + Co-authored-by); por defecto coauthor
+commit_author = ""                   # opcional "Name <email>"; vacío usa <login>@users.noreply.github.com
 instructions = ""                     # enfoque de revisión del equipo, inyectado en el prompt de sistema
 ```
 

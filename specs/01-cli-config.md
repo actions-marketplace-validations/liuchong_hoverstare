@@ -42,6 +42,8 @@ Commands:
 | env `HOVERSTARE_SUMMARY_MAX_CHARS` | 覆盖模型摘要长度上限 |
 | env `HOVERSTARE_MAX_ROUNDS` | 覆盖单次 run 的模型调用轮数上限（0 = 由工具预算推导） |
 | env `HOVERSTARE_MAX_OUTPUT_TOKENS` | 覆盖单次调用的输出上限（0 = 由窗口推导） |
+| env `HOVERSTARE_COMMIT_IDENTITY` | 覆盖 toml `commit_identity`（author/bot/coauthor） |
+| env `HOVERSTARE_COMMIT_AUTHOR` | 覆盖 toml `commit_author`（`Name <email>`） |
 
 非 Actions 环境本地调试时，`--pr` + `GITHUB_REPOSITORY` + 两个 token 即可运行。
 
@@ -121,6 +123,12 @@ max_output_tokens = 0
 # 机器可读内容（hoverstare-meta、指纹标记、schema、命令名）永不本地化。
 language = "en"
 
+# 开发模式 commit 身份（spec 11 §3.3）：author（作者=触发者）/ bot（作者=bot）/
+# coauthor（作者=触发者 + Co-authored-by trailer）；默认 coauthor。
+commit_identity = "coauthor"
+# 人类触发者姓名/邮箱的显式覆盖，形如 "Name <email>"（仅 author/coauthor 生效）。
+# commit_author = "Alice <alice@example.com>"
+
 # 自由文本，注入系统提示，写团队特定关注点
 instructions = ""
 ```
@@ -135,6 +143,7 @@ CLI flag > 环境变量 > `.github/hoverstare.toml` > 内置默认值
 - `severity_threshold` 必须是枚举值之一
 - `thinking` 必须是 `enabled` / `disabled`；`reasoning_effort` 必须是枚举值之一
 - `context_tokens` 设置时必须 `>= 4096`
+- `commit_identity` 必须是 `author` / `bot` / `coauthor`；`commit_author` 必须是 `Name <email>`
 - 压缩参数必须满足 `0 < compaction_keep_ratio < compaction_threshold_ratio < 1`；`summary_max_chars >= 200`
 - `ignore` 的 glob 必须可编译
 - `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` 至少一个存在
@@ -175,6 +184,8 @@ pub struct Config {
     pub context_tokens: Option<u64>, // 模型上下文窗口（推导 diff 预算上限）
     pub status_checks: bool,
     pub instructions: String,
+    pub commit_identity: CommitIdentity, // author | bot | coauthor（spec 11 §3.3）
+    pub commit_author: Option<String>,   // "Name <email>" 覆盖触发者身份
     pub github_token: SecretString,
     pub llm: LlmCredentials, // Anthropic(key) | OpenAICompatible { key, base_url }
     pub workspace: PathBuf,

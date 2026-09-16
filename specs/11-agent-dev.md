@@ -70,6 +70,9 @@ GITHUB_TOKEN 的 push 不触发 CI，会导致 checks 不跑、无法合并。
   模式作者为下达指令的人类，`coauthor` 模式在 author 之上追加
   `Co-authored-by: hoverstare[bot]` trailer。无触发者、或触发者即 bot（自触发）
   时一律退化为 bot 身份，不臆造 `<login>@users.noreply.github.com` 作者。
+  人类作者默认取 `<login>@users.noreply.github.com`，可用 `commit_author` 的
+  `Name <email>` 显式覆盖。相应环境变量名 `HOVERSTARE_COMMIT_IDENTITY` /
+  `HOVERSTARE_COMMIT_AUTHOR`。优先级：env > toml > 默认 `coauthor`。
 - commit message：Conventional Commits，如
   `feat: <task summary> (hoverstare-dev #123)`。
 
@@ -130,6 +133,42 @@ GITHUB_TOKEN 的 push 不触发 CI，会导致 checks 不跑、无法合并。
 - 人类在分支上的 commit 不被覆盖：每轮开始先 `git pull --rebase`，
   冲突则停止并评论说明。
 
+### 队列（自驱动）
+
+队列把 PR 上的多条指令排成串行、可恢复的工作流。它是纯逻辑（`devqueue`），
+所有状态都在 GitHub 侧，轮与轮之间无内存状态（承 §3.1）。逐条契约如下
+（每条附一个现存测试名作锚点）：
+
+1. **载体**：队列状态以 append-only 隐藏标记 `<!-- hoverstare-queue:{json} -->`
+   附在轮次报告评论里，latest-wins（读最近一条标记）；只存来源评论 id 与状态，
+   **不复制指令正文**——正文按 id 回读评论串。
+   锚点：`devqueue::tests::queue_roundtrips_and_latest_wins`。
+2. **上限**：未完成条目上限 20 条、单条指令文本 2000 字符、历史保留 10 条后
+   剪枝；超限**明确拒绝**（在 PR 上贴出拒绝原因），而不是静默丢弃。
+   锚点：`devqueue::tests::enqueue_refuses_beyond_caps_and_is_idempotent`
+   （剪枝：`history_is_pruned_so_the_live_cap_stays_free`）。
+3. **出队规则**：`running` 优先 → 人类条目按来源 id 升序 → bot 条目；一轮只取
+   一条；人类指令不因机器人自触发而被丢。
+   锚点：`devqueue::tests::dequeue_is_running_then_human_then_fifo`。
+4. **执行与迁移**：本轮执行的条目在开局置 `running`，结束按结果置 `done` /
+   `failed`；失败不再自动重试（failure-stop）。
+   锚点：`devqueue::tests::self_trigger_only_after_landed_round_with_work_left`。
+5. **claim 守卫**：自触发评论携带"刚完成的轮次"；若最新标记轮次 ≥ 它声称的
+   轮次，则本轮**静默退出**（被更新的 run 取代，不写任何东西）。
+   锚点：`devqueue::tests::stale_claim_and_cap_are_prechecked`。
+6. **artifact gate**：上一轮记录的 sha 必须是当前分支 head 的**祖先**，否则停止
+   （分支被改写时不叠加工作）；仅约束自驱动轮，人类指令照常执行。
+   锚点：`devqueue::tests::artifact_gate_requires_ok_and_ancestor`。
+7. **合并门**：队列仍有 open 条目时 `@hoverstare merge` **拒绝**并原样贴出
+   `@hoverstare queue` 的清单；`@hoverstare merge force` 放行并说明丢弃条数。
+   锚点：`devqueue::tests::merge_gate_refuses_nonempty_queue_unless_forced`。
+8. **`@hoverstare queue` 命令**：在 PR 上显示 pending / running / done / failed /
+   dropped 的清单与计数（队列为空也明确说明）；在 issue 上无效。
+   锚点：`devqueue::tests::checklist_shows_running_and_pending`。
+9. **与既有机制的关系**：§6 自动链 10 轮上限只约束自触发（人类指令不受限）；
+   自触发评论身份为 `hoverstare[bot]`，故身份退化为 bot（`commit_identity` 的
+   author/coauthor 只在人类触发轮生效，见 §3.3）。
+
 ## 7. CLI 与事件扩展
 
 - 新子命令 `hoverstare develop`：从 `GITHUB_EVENT_PATH` 解析
@@ -141,11 +180,13 @@ GITHUB_TOKEN 的 push 不触发 CI，会导致 checks 不跑、无法合并。
 
 ## 8. 开放问题（spec 评审时定）
 
-1. commit 作者邮箱用什么（App 没有公开邮箱；可用
-   `hoverstare[bot]@users.noreply.github.com` 形式）。
+1. ~~commit 作者邮箱用什么~~ **已实现**（关闭）：bot 用
+   `hoverstare[bot]@users.noreply.github.com`，人类触发者用
+   `<login>@users.noreply.github.com`，可用 `commit_author` 覆盖（§3.3）。
 2. issue 首帖是否需要显式 @hoverstare 才启动，还是首帖即任务（倾向：
    首帖含 @ 才启动，避免误触发）。
-3. 分支命名 slug 规则（issue 标题前 30 字符 slug 化）。
+3. ~~分支命名 slug 规则~~ **已实现**（关闭）：`src/devagent.rs` 的 `slug`
+   取 issue 标题前 30 字符 slug 化，注释即 §8.3。
 
 ## 9. 里程碑
 
