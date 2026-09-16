@@ -223,10 +223,10 @@ cargo fmt && cargo clippy --workspace --all-targets -- -D warnings
     release tag，防止外部 PR 指向自己控制的代码）。pin 只换二进制来源，工作区仍是被处理的
     代码；pin 构建在独立 worktree，冷编译约 3 分钟。注意 workflow 文件本身由 App 推不动，
     harness 改动只能由人提交。
-29. **bot 写的代码不过 fmt**：bot 不能执行代码，每轮都可能引入 rustfmt 偏差，
+27. **bot 写的代码不过 fmt**：bot 不能执行代码，每轮都可能引入 rustfmt 偏差，
     不要让它逐条手改 18 处格式——人跑 `cargo fmt` 提一个 style commit 才是
     设计内的协作方式（人类可通过 commit 调整分支）。
-27. **自驱动队列的接线与验收**：人类 `@hoverstare <指令>` 是一条任务入队，经历
+28. **自驱动队列的接线与验收**：人类 `@hoverstare <指令>` 是一条任务入队，经历
     Running → Done/Failed 收尾。一轮结束时，只有"落地成功 + 队列还有活 + 未到轮次
     上限"才自触发下一条（以 `@hoverstare continue` 评论启动），且**自触发只从队列取
     任务、不带自由指令**；队列空（或已排空）**绝不**自触发，链在无人处静默终止。
@@ -235,7 +235,7 @@ cargo fmt && cargo clippy --workspace --all-targets -- -D warnings
     把两条指令**分别**发成两条评论，观察一次只跑一条、每轮报告点名本轮执行的那一条、
     下一条以 `@hoverstare continue` 自触发带出——若一次跑两条或漏跑，先查并发组
     （§7 #10）与 claim/gate（`devqueue::precheck` / `plan_round`）。
-28. **队列运维：入队去重、失败即停、自触发取 pending**：人类在 PR 上的每条
+29. **队列运维：入队去重、失败即停、自触发取 pending**：人类在 PR 上的每条
     `@hoverstare <指令>` 都**入队**并按**来源评论 id 去重**（同一条评论重放不
     重复入队）；本轮执行的条目开局置 `running`、结束按结果置 `done` / `failed`，
     **失败即停、不自动重试**。**自触发轮的任务取队列的下一个 pending 项**（不是
