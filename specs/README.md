@@ -27,6 +27,8 @@ agentic 审查，把高置信度缺陷以行内评论发到 PR 上并跨 commit 
 | [10-serve-mode.md](10-serve-mode.md) | 可选自部署 webhook 服务（零配置 hoverstare[bot]） | M8 ✅ |
 | [11-agent-dev.md](11-agent-dev.md) | Agent 开发模式：issue 驱动 + PR 循环开发（写工具、推分支、自触发、合并命令） | M11-M13 |
 | [12-permissions.md](12-permissions.md) | 细粒度权限系统：`.github/hoverstare.toml` 声明谁可用哪条命令 | M14 |
+| （并入 11）自驱动队列 | 任务队列状态机、claim 守卫、artifact gate、合并队列门、`queue` 命令 | M15 |
+| （并入 11/08/01）提交身份与签名、流程级 pin | coauthor/author/bot、GPG 签名、流程起始 revision 固定 | M16 |
 | [13-context-compaction.md](13-context-compaction.md) | agentic 循环的上下文压缩：阈值压缩 + 溢出恢复（自持 history） | — |
 | [validation-2026-07-18.md](validation-2026-07-18.md) | 真实环境端到端验证记录 | — |
 
@@ -222,6 +224,58 @@ agentic 审查，把高置信度缺陷以行内评论发到 PR 上并跨 commit 
 
 **验收**：YAML 全部通过校验；action 下载/校验/缓存逻辑待首个 release tag 后
 在 fork 仓库手动验证（spec 08）。
+
+### M11-M13 — Agent 开发模式 ✅ 2026-07-19 完成
+
+**目标**：issue 与 PR 评论区就是 AI 编程 IDE。
+
+- [x] 写工具（`write_file` / `edit_file` / 受控命令白名单）+ 与审查共用的路径沙箱与预算
+- [x] issue 主线：讨论轮（`@hoverstare <指令>`）→ 计划 → `@hoverstare go` 开分支与 PR
+- [x] PR 主线：评论下达任务 → 在 PR 分支开发 → conventional commit → push → 轮次报告
+- [x] 自触发续轮（每 PR 上限 10 轮，人类指令不受限）与失败即停
+- [x] `@hoverstare merge`：checks 全绿 + 无冲突 + 队列为空 → squash 合并并删分支
+- [x] 令牌职责分离：身份走 App token、写操作走 PAT 类令牌
+
+**验收**：真实仓库（本仓库自身 dogfood）走通 issue → PR → 多轮开发 → merge；
+期间修掉的真问题记入 `AGENTS.md` §7（冲突静默掐 CI、输出额度、prefix cache 契约等）。
+
+### M14 — 细粒度权限 ✅ 2026-07-19 完成
+
+- [x] `.github/hoverstare.toml` 的 `[permissions]`：`auto_review` / `review` / `develop` / `merge`
+      按 login 或 association 声明；默认 auto_review=anyone、命令类=collaborator、merge=write
+
+**验收**：单测覆盖 authorization 判定；dogfood 上人类指令与自触发分别走不同判定。
+
+### M15 — 自驱动队列 ✅ 2026-09-16 完成
+
+**目标**：把"一连串指令"变成可预期、可中断、可核对的串行工作流。
+
+- [x] `devqueue`：append-only 隐藏标记载体、按来源评论 id 去重、上限与剪枝、状态机
+- [x] 出队规则：running 优先 → 人类条目按 id 升序 → bot 条目；一轮只取一条
+- [x] claim 守卫（被更新的 run 静默退出）与 artifact gate（记录 sha 必须是 head 祖先）
+- [x] 合并队列门：pending 时拒绝合并并原样贴出清单，`force` 放行并说明丢弃条数
+- [x] `@hoverstare queue` 查询命令；轮次报告带队列状态与"正在跑"标识
+- [x] 接线：人类指令入队、本轮置 Running、结束置 Done/Failed，自触发从队首取任务
+
+**验收**：真实 PR 上连发两条指令 → 严格串行（第二条在其运行的整段时间里保持 pending）、
+各自独立提交、队列清空后不再自触发；`enqueue`/`set_state` 在生产路径有调用点（复合
+"能力存在 ≠ 可达"的复核纪律）。
+
+### M16 — 提交身份、签名与流程级 pin ✅ 2026-09-16 完成
+
+- [x] `commit_identity = author|bot|coauthor`（默认 coauthor）与 `commit_author` 覆盖；
+      覆盖同样作用于自触发轮与本地 `run --task`（此二者没有人类触发者）
+- [x] 覆盖时 committer 与 author 同为人：GitHub 按 committer 校验签名、App 不能持有密钥，
+      实测 committer 为 bot 时正确签名也只会得到 `unknown_key`
+- [x] CI 签名：`HOVERSTARE_GPG_PRIVATE_KEY`（+可选 `HOVERSTARE_GPG_PASSPHRASE`）导入密钥并
+      置 `commit.gpgsign`，导入后做一次空提交自检，签不出来直接失败
+- [x] 流程级 pin：流程开始时把默认分支 revision 写进 PR body 的隐藏标记，后续轮次固定构建它，
+      并按该 commit 单独缓存；标记只接受 master / release tag / 可从默认分支到达的 commit
+- [x] 轮次报告显示本轮构建来源；上下文压缩与 prefix cache 可观测
+
+**验收**：dogfood 流程实测——PR body 带 pin 标记、日志 `building hoverstare from pinned ref …`、
+`Build (pinned revision)` 成功且事件版本被跳过；bot 产出的提交 `author`/`committer` 均为维护者、
+签名通过且 GitHub 侧 `verified=true`。
 
 ## 测试策略
 

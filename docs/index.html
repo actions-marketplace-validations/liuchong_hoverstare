@@ -6,13 +6,13 @@
     <title>HoverStare - Repo-aware AI code review</title>
     <meta
       name="description"
-      content="HoverStare is a repo-aware AI code review bot for GitHub pull requests, shipped as a Rust-powered GitHub Action."
+      content="HoverStare is a repo-aware AI agent for GitHub: pull request review, plus develop mode where issues and PR comments become an AI IDE. Shipped as a Rust-powered GitHub Action."
     >
     <meta name="theme-color" content="#1a7f37">
     <meta property="og:title" content="HoverStare">
     <meta
       property="og:description"
-      content="AI code review that reads your repo before it comments."
+      content="AI review that reads your repo, and an issue-to-PR developer that works in the pull request."
     >
     <meta property="og:type" content="website">
     <meta property="og:image" content="https://liuchong.github.io/hoverstare/pages/logo.svg">
@@ -27,6 +27,7 @@
       </a>
       <nav class="nav" aria-label="Primary">
         <a href="#why">Why</a>
+        <a href="#develop">Develop mode</a>
         <a href="#quickstart">Quick start</a>
         <a href="#docs">Docs</a>
         <a href="https://github.com/liuchong/hoverstare">GitHub</a>
@@ -41,7 +42,9 @@
           <p class="lede">
             HoverStare reviews pull requests with repository context, read-only
             investigation tools, multi-pass voting, and precise inline comments
-            that keep tracking findings across commits.
+            that keep tracking findings across commits. In develop mode it also
+            plans in the issue, opens the pull request, and keeps working from
+            comments in that thread.
           </p>
           <div class="hero-actions" role="group" aria-label="Primary actions">
             <a class="button primary" href="#quickstart">Add to a repo</a>
@@ -97,6 +100,51 @@
             <p>
               Hidden fingerprints follow findings across pushes, letting
               HoverStare review the delta and mark fixed issues without repeats.
+            </p>
+          </article>
+        </div>
+      </section>
+
+      <section id="develop" class="section">
+        <div class="section-heading">
+          <p class="eyebrow">Develop mode</p>
+          <h2>The issue and the pull request are the IDE.</h2>
+          <p>
+            Discuss in the issue, hand it over with one command, and keep
+            steering from the pull request. Every round commits to the branch,
+            so the diff and the conversation stay in one place.
+          </p>
+        </div>
+        <div class="feature-grid">
+          <article>
+            <h3>Plan, then build</h3>
+            <p>
+              <code>@hoverstare</code> in an issue starts a discussion round
+              that investigates the repository. <code>@hoverstare go</code>
+              turns the plan into a branch and a pull request.
+            </p>
+          </article>
+          <article>
+            <h3>Queue, not chaos</h3>
+            <p>
+              Instructions left on the pull request line up as tasks. One round
+              runs at a time, the next stays queued, and an empty queue means
+              no extra round.
+            </p>
+          </article>
+          <article>
+            <h3>Your name, your signature</h3>
+            <p>
+              Commits are authored by the person who asked, marked
+              <code>Co-authored-by: hoverstare[bot]</code>, and signed with your
+              GPG key when you configure one.
+            </p>
+          </article>
+          <article>
+            <h3>Merges on command</h3>
+            <p>
+              <code>@hoverstare merge</code> checks the review state and the
+              queue, then squash-merges and deletes the branch.
             </p>
           </article>
         </div>
@@ -174,6 +222,22 @@ jobs:
             <span>Ask for a plain-language explanation inside a review thread.</span>
           </div>
           <div>
+            <code>@hoverstare go</code>
+            <span>In an issue: implement the agreed plan on a branch and open a pull request.</span>
+          </div>
+          <div>
+            <code>@hoverstare &lt;task&gt;</code>
+            <span>On a pull request: develop that task on the branch and report back.</span>
+          </div>
+          <div>
+            <code>@hoverstare queue</code>
+            <span>Show what is running, what is still queued, and what failed.</span>
+          </div>
+          <div>
+            <code>@hoverstare merge</code>
+            <span>Merge when checks are green and the queue is empty.</span>
+          </div>
+          <div>
             <code>@hoverstare help</code>
             <span>Print the supported command list for the repository.</span>
           </div>
@@ -189,6 +253,10 @@ jobs:
           <a href="https://github.com/liuchong/hoverstare#readme">
             <strong>README</strong>
             <span>Full setup, configuration, FAQ, and local development notes.</span>
+          </a>
+          <a href="web-ide.md">
+            <strong>Develop mode</strong>
+            <span>Issue-to-PR workflow, commands, commit identity and GPG signing.</span>
           </a>
           <a href="pipeline.md">
             <strong>Pipeline</strong>

@@ -318,7 +318,7 @@ cargo clippy --all-targets -- -D warnings
 cargo fmt
 ```
 
-Specs und Meilensteinplan liegen in [`specs/`](specs/README.md) — die
+Specs und Meilensteinplan liegen in [`specs/`](../../specs/README.md) — die
 Single Source of Truth für Design-Entscheidungen.
 
 ## Star-Verlauf & Mitwirkende

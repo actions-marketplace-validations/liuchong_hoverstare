@@ -135,6 +135,19 @@ gh api repos/<owner>/<repo>/commits/<sha> --jq '.commit.verification'
 #   {"verified":false,"reason":"unsigned"}     no signing key configured
 ```
 
+### One revision per flow
+
+A flow (issue → `go` → pull request) records the default-branch revision it
+started from in the pull request body, and every later round of that flow builds
+that same revision — master moving on does not change the code under a flow in
+flight, and the pinned build reuses its own cache. To move a flow deliberately,
+pin it yourself: a comment containing `hoverstare-pin: master` (or a release tag,
+or a commit reachable from the default branch) switches the source for the next
+round, and a manual `workflow_dispatch` can name any ref through its `version`
+input. Marker pins are refused for branches, because anyone who can open a pull
+request can write a comment while the workflow holds write permissions. The
+round report states which revision it built from.
+
 ## Demo notes from #13 / #14
 
 - Specs first, then code: unmentioned finding-thread replies, in-thread

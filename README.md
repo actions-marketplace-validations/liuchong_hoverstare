@@ -298,6 +298,23 @@ The merge endpoint needs `contents: write`. Pass a PAT via `gh_pat`, or grant
 the GitHub App Contents: Read and write (and accept the upgrade on the
 installation).
 
+**Why do HoverStare's commits show as unverified?**
+Without a signing key the commits are unsigned. Configure
+`HOVERSTARE_GPG_PRIVATE_KEY` (and the passphrase secret if the key has one) and
+put the matching public key on the author's GitHub account. Note that GitHub
+verifies against the commit's *committer*, and an app account cannot hold
+signing keys — that is why an author override also makes the committer that same
+person. Details: [`docs/web-ide.md`](docs/web-ide.md#commits-identity-and-signing).
+
+**Which HoverStare revision does a run use?**
+The one the event itself sits on, unless a pin applies. A flow (issue → `go` →
+PR) records the default-branch revision it started from in the pull request
+body, so every later round of that flow builds that same revision (and reuses
+its cache). `hoverstare-pin: master` in a comment, or the `version` input of a
+manual `workflow_dispatch`, overrides it; marker pins accept only `master`,
+release tags, or commits reachable from the default branch. The round report
+names the revision it built from.
+
 **Yellow banner "1 workflow awaiting approval" / checks stuck at *action_required*?**
 This is GitHub's maintainer-approval gate for `pull_request` workflows, not a
 HoverStare bug and not a missing secret. How to drive develop mode from the

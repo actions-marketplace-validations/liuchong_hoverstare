@@ -113,6 +113,14 @@ gh api repos/<owner>/<repo>/commits/<sha> --jq '.commit.verification'
 #   {"verified":false,"reason":"unsigned"}    未配置签名密钥
 ```
 
+### 一个流程一个版本
+
+流程（issue → `go` → PR）开始时会把当时的默认分支 revision 写进 PR body，该流程后续每一轮
+都构建这个 revision——master 前进不会让跑在途中的流程中途换代码，pin 的构建还会复用自己那份缓存。
+想主动换版本：在评论里写 `hoverstare-pin: master`（或 release tag，或可从默认分支到达的 commit）
+即可让下一轮改用该来源；手动 `workflow_dispatch` 的 `version` 输入可以指定任意 ref。标记形式
+**不接受分支名**：任何能开 PR 的人都能写评论，而 workflow 持有写权限。轮次报告里会写明本轮构建来源。
+
 ## #13 / #14 示范里实际发生的事
 
 - 先改 spec，再写代码：无 `@mention` 的 finding 线程讨论、线程内 `explain`、

@@ -316,7 +316,7 @@ cargo clippy --all-targets -- -D warnings
 cargo fmt
 ```
 
-Las specs y el plan de hitos están en [`specs/`](specs/README.md) — la fuente
+Las specs y el plan de hitos están en [`specs/`](../../specs/README.md) — la fuente
 única de verdad para las decisiones de diseño.
 
 ## Historial de estrellas y colaboradores

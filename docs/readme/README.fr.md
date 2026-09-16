@@ -318,7 +318,7 @@ cargo clippy --all-targets -- -D warnings
 cargo fmt
 ```
 
-Les specs et le plan de jalons sont dans [`specs/`](specs/README.md) — la
+Les specs et le plan de jalons sont dans [`specs/`](../../specs/README.md) — la
 source de vérité unique pour les décisions de conception.
 
 ## Historique des étoiles et contributeurs

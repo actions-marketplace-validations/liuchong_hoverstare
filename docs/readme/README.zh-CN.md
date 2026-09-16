@@ -254,6 +254,12 @@ HoverStare 会降级为线程内回复"✅ 已确认修复"。如需完整 resol
 **GitHub Enterprise？**
 设 `GITHUB_API_URL=https://<你的 GHE 域名>/api/v3`。
 
+**为什么 bot 的提交显示"未验证"？**
+没配签名密钥时提交不带签名。配置 `HOVERSTARE_GPG_PRIVATE_KEY`（密钥有口令时再加口令 secret），并把公钥挂到作者的 GitHub 账号上。注意 GitHub 是按提交的 **committer** 校验签名，而 App 账号无法持有密钥——所以配置作者覆盖时 committer 也设为同一人。详见 [提交身份与签名](../web-ide.zh-CN.md#提交身份与签名)。
+
+**一次运行到底用哪个 HoverStare 版本？**
+默认用事件本身所在的版本；若存在 pin 则以 pin 为准。一个流程（issue → `go` → PR）会把开始时的默认分支 revision 写进 PR body，该流程后续每一轮都构建这个 revision（并复用其缓存）。评论里的 `hoverstare-pin: master`、或手动 `workflow_dispatch` 的 `version` 输入可以覆盖；标记形式的 pin 只接受 `master`、release tag，或可从默认分支到达的 commit。轮次报告里会写明本轮构建来源。
+
 **`@hoverstare merge` 报 403？**
 合并端点需要 `contents: write`。通过 `gh_pat` 传 PAT，或给 GitHub App 开 Contents: Read and write 权限（并在安装处接受升级）。
 
@@ -304,7 +310,7 @@ cargo clippy --all-targets -- -D warnings
 cargo fmt
 ```
 
-设计文档与里程碑计划见 [`specs/`](specs/README.md)——设计决策的单一事实来源。
+设计文档与里程碑计划见 [`specs/`](../../specs/README.md)——设计决策的单一事实来源。
 
 ## Star 历史与贡献者
 

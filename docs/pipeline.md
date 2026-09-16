@@ -115,3 +115,5 @@ The final summary text is taken from the lane that produced the most findings.
 - [`src/pipeline.rs`](../src/pipeline.rs) — the implementation.
 - [`specs/05-review-pipeline.md`](../specs/05-review-pipeline.md) — the full specification.
 - [`specs/04-agent-backend.md`](../specs/04-agent-backend.md) — the single-pass backend underneath.
+- [`docs/web-ide.md`](web-ide.md) — develop mode, which reuses the same agent loop
+  and tool sandbox with a write-capable tool profile instead of the review lanes.

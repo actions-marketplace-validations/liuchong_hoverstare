@@ -73,6 +73,24 @@ fly deploy
 
 然后把 App 的 Webhook URL 配成 `https://<app>.fly.dev/webhook`。
 
+## 开发模式的提交身份与签名（serve 模式）
+
+`HOVERSTARE_COMMIT_IDENTITY` / `HOVERSTARE_COMMIT_AUTHOR` 与环境变量总表里的一致，用来决定
+提交挂谁的名字（默认 `coauthor`：作者=触发者 + `Co-authored-by: hoverstare[bot]` 尾注）。
+
+**签名不在环境变量里**：serve 模式下签名由容器内的 git 配置决定。要让提交带签名，请把签名密钥
+挂进容器并在镜像/启动脚本里设置：
+
+```sh
+git config --global user.signingkey <KEY_ID>
+git config --global commit.gpgsign true
+# 无口令密钥：直接可用；带口令：需要 gpg-agent 或 loopback 包装（见 docs/web-ide.md）
+```
+
+注意 GitHub 按提交的 **committer** 校验签名，而 App 账号不能持有密钥——配置了
+`commit_author` 覆盖时，committer 会一并设为该作者（见
+[docs/web-ide.md](web-ide.md#commits-identity-and-signing)）。
+
 ## 环境变量总表
 
 | env | 必填 | 说明 |
