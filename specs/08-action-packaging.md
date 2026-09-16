@@ -115,7 +115,16 @@ inputs：
 
 - `cargo fmt --check`、`cargo clippy -- -D warnings`、`cargo test`；
 - 构建 musl 产物冒烟（不发布）；
-- **自举**：本仓库的 PR 用 hoverstare 自己审查（eat our own dog food）。
+- **自举（dogfood）**：本仓库的 PR/issue 用 hoverstare 自己处理，跑的是**事件所在版本
+  的源码构建**（`cargo build --release`，不是预编译二进制），因此 dogfood 永远测最新代码。
+- **版本自救（pin）**：dogfood 默认用事件所在版本构建；需要时可以固定构建某个 ref：
+  - 手动触发（`workflow_dispatch`）：`version` 填分支/tag/commit，`pr` 填要处理的 PR，
+    维护者可用任意 ref（这是 master 坏掉时的自救入口）；
+  - 自动触发：在 PR body、触发评论或 review 正文里写 `hoverstare-pin: <ref>`。
+    **这里只接受 `master` 或 release tag（`vX.Y.Z`）**——任何能开 PR 的人都能写这个标记，
+    而 workflow 持有写权限，不能允许它指着一份别人控制的代码去构建运行。
+  - pin 只改变**二进制的来源**：工作区仍是被处理的那份代码，`show_base_file`、工具沙箱、
+    push 目标都不受影响；pin 构建在独立 worktree 里进行，因此那一次构建是冷编译（约 3 分钟）。
 
 ## 测试要点
 

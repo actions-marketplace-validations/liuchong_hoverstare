@@ -179,7 +179,13 @@ cargo fmt && cargo clippy --workspace --all-targets -- -D warnings
 14. **`${{ }}` 表达式里不能写 `#` 注释**（会并进表达式串，workflow 解析失败）。
 15. **squash merge 需要 contents:write**（不是 pull-requests:write）：App 只读
     时 `@hoverstare merge` 403——写操作全部走 PAT 类令牌，身份仍归 App。
-16. **bot 写的代码不过 fmt**：bot 不能执行代码，每轮都可能引入 rustfmt 偏差，
+16. **dogfood 可以钉版本自救**：master 上的**代码**坏掉时，dogfood 会连自己也跑不起来
+    （构建的就是坏代码）。自救入口有两个：`workflow_dispatch`（填 `version` + `pr`，维护者
+    可指定任意 ref）或在 PR body / 评论里写 `hoverstare-pin: <ref>`（只接受 `master` 与
+    release tag，防止外部 PR 指向自己控制的代码）。pin 只换二进制来源，工作区仍是被处理的
+    代码；pin 构建在独立 worktree，冷编译约 3 分钟。注意 workflow 文件本身由 App 推不动，
+    harness 改动只能由人提交。
+17. **bot 写的代码不过 fmt**：bot 不能执行代码，每轮都可能引入 rustfmt 偏差，
     不要让它逐条手改 18 处格式——人跑 `cargo fmt` 提一个 style commit 才是
     设计内的协作方式（人类可通过 commit 调整分支）。
 

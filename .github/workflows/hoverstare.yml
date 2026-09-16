@@ -5,6 +5,17 @@
 name: HoverStare (dogfood)
 
 on:
+  # 手动触发是 master 坏掉时的自救入口：可以指定要审查的 PR 和要构建的版本。
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: "要处理的 PR 编号（手动触发时必填）"
+        required: false
+        default: ""
+      version:
+        description: "构建用的 ref：分支/tag/commit（留空 = 事件所在版本）"
+        required: false
+        default: ""
   pull_request:
     types: [opened, reopened, synchronize]
   issues:
@@ -36,7 +47,7 @@ concurrency:
         && format('noop-review-{0}', github.event.review.id))
       || ((github.event_name == 'issue_comment' || github.event_name == 'pull_request_review_comment' || github.event_name == 'pull_request_review')
         && format('dev-{0}', github.event.issue.number || github.event.pull_request.number))
-      || (github.event.pull_request.number || github.event.issue.number)
+      || (github.event.pull_request.number || github.event.issue.number || inputs.pr)
     }}
   cancel-in-progress: true
 
@@ -45,6 +56,7 @@ jobs:
     runs-on: ubuntu-latest
     # bot 自己的评论一律不触发，除非是自触发命令（spec 11 §6 熔断由 devagent 轮次计数保证）
     if: >-
+      github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'pull_request' && !github.event.pull_request.draft) ||
       (github.event_name == 'issues' && contains(github.event.issue.body, '@hoverstare')) ||
       (github.event_name == 'pull_request_review' && contains(github.event.review.body, '@hoverstare') && github.event.review.user.login != 'hoverstare[bot]') ||
@@ -57,14 +69,93 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0 # show_base_file 需要 base 分支历史
+          fetch-tags: true # 版本可用 tag 指定（自救时）
           persist-credentials: false
+
+      # 版本自救（spec 08）：默认用事件所在版本构建；PR body / 触发评论里写
+      # `hoverstare-pin: <ref>`，或手动触发时填 version，就改成构建那个 ref。
+      # 工作区仍然是被处理的那份代码（工具读的是它），只有二进制来自 pin。
+      - name: Resolve source ref
+        id: source
+        shell: bash
+        env:
+          MODE: ${{ github.event_name == 'workflow_dispatch' && 'dispatch' || 'event' }}
+          DISPATCH_VERSION: ${{ inputs.version }}
+          ISSUE_BODY: ${{ github.event.issue.body }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          COMMENTS: ${{ github.event.comment.body }}
+          REVIEW_BODY: ${{ github.event.review.body }}
+        run: |
+          set -euo pipefail
+          ref="$DISPATCH_VERSION"
+          if [ -z "$ref" ]; then
+            for text in "$COMMENTS" "$PR_BODY" "$ISSUE_BODY" "$REVIEW_BODY"; do
+              found=$(printf '%s' "$text" \
+                | grep -oiE 'hoverstare-pin:[[:space:]]*[A-Za-z0-9._/-]+' \
+                | head -1 | sed -E 's/.*:[[:space:]]*//' || true)
+              if [ -n "$found" ]; then ref="$found"; break; fi
+            done
+          fi
+          if [ -z "$ref" ]; then
+            echo "mode=event" >> "$GITHUB_OUTPUT"
+            echo "using the event's own revision"
+            exit 0
+          fi
+          if ! printf '%s' "$ref" | grep -qE '^[A-Za-z0-9][A-Za-z0-9._/-]*$'; then
+            echo "::error::hoverstare-pin ref is not a plain ref name: $ref"
+            exit 1
+          fi
+          # 只有维护者能创建的 ref 才被接受：任何能开 PR 的人都能往 PR body 里写标记，
+          # 而 workflow 手上有写权限，不能让人指着一份自己控制的代码去构建运行。
+          if [ "$MODE" != "dispatch" ] \
+             && [ "$ref" != "master" ] \
+             && ! printf '%s' "$ref" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::hoverstare-pin from a PR or comment may only name master or a release tag (vX.Y.Z); got: $ref"
+            exit 1
+          fi
+          git fetch --no-tags --quiet origin "$ref" || true
+          commit=$(git rev-parse --verify --quiet "${ref}^{commit}" || true)
+          if [ -z "$commit" ]; then
+            echo "::error::hoverstare-pin ref not found: $ref"
+            exit 1
+          fi
+          echo "mode=pinned" >> "$GITHUB_OUTPUT"
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+          echo "::notice::building hoverstare from pinned ref $ref ($commit)"
+
+      - name: Add pinned source worktree
+        if: steps.source.outputs.mode == 'pinned'
+        shell: bash
+        run: |
+          set -euo pipefail
+          git worktree add --detach "$RUNNER_TEMP/hoverstare-src" \
+            "${{ steps.source.outputs.commit }}"
 
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: Build
+      - name: Build (event revision)
+        if: steps.source.outputs.mode != 'pinned'
         run: cargo build --release
+
+      # 只有二进制来自 pin；工作区（工具读的代码）仍是被处理的那份。
+      - name: Build (pinned revision)
+        if: steps.source.outputs.mode == 'pinned'
+        working-directory: ${{ runner.temp }}/hoverstare-src
+        run: cargo build --release
+
+      - name: Resolve binary path
+        id: binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ steps.source.outputs.mode }}" = "pinned" ]; then
+            echo "path=${{ runner.temp }}/hoverstare-src/target/release/hoverstare" >> "$GITHUB_OUTPUT"
+          else
+            echo "path=./target/release/hoverstare" >> "$GITHUB_OUTPUT"
+          fi
 
       # 品牌身份：评论/推送用 hoverstare[bot]（App token 可触发 CI）
       - name: Create App token
@@ -88,9 +179,17 @@ jobs:
           HOVERSTARE_CONTEXT_TOKENS: ${{ vars.HOVERSTARE_CONTEXT_TOKENS }}
         run: |
           set -euo pipefail
-          bin=./target/release/hoverstare
+          bin="${{ steps.binary.outputs.path }}"
           cmd="review"
           case "${{ github.event_name }}" in
+            workflow_dispatch)
+              if [ -z "${{ inputs.pr }}" ]; then
+                echo "::error::manual runs need the pr input（手动触发时请填要处理的 PR 编号）"
+                exit 1
+              fi
+              cmd="review"
+              "$bin" "$cmd" --pr "${{ inputs.pr }}"
+              exit 0 ;;
             issues)
               cmd="develop" ;;
             issue_comment)

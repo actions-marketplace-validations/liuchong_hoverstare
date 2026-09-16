@@ -19,6 +19,10 @@ const MAX_READ_LINES: usize = 400;
 const MAX_OUTPUT_BYTES: usize = 64 * 1024;
 const MAX_GREP_MATCHES: usize = 50;
 const MAX_GLOB_RESULTS: usize = 100;
+/// Hard ceiling a caller may ask for with `limit`.
+const MAX_GLOB_LIMIT: u32 = 1000;
+const MAX_LIST_ENTRIES: usize = 200;
+const MAX_LIST_LIMIT: u32 = 1000;
 /// Oversized files skipped by grep
 const MAX_GREP_FILE_BYTES: u64 = 1024 * 1024;
 /// Directories always skipped during traversal (enforced beyond .gitignore)
@@ -33,13 +37,17 @@ const SKIP_DIRS: &[&str] = &[
     ".idea",
 ];
 
-/// Shared tool state: sandbox root, base ref, budget counter, call trace
+/// Shared tool state: sandbox root, base ref, budget counter, call trace, read set
 pub struct ToolShared {
     workspace: PathBuf, // canonicalized
     base_ref: String,
     max_calls: u32,
     calls: AtomicU32,
     trace: Mutex<Vec<ToolCallRecord>>,
+    /// Files this run has actually read. A whole-file write to an existing file
+    /// has to have seen the content it replaces; nothing else can tell the
+    /// difference between a rewrite and a guess.
+    read: Mutex<std::collections::HashSet<PathBuf>>,
 }
 
 impl fmt::Debug for ToolShared {
@@ -62,6 +70,7 @@ impl ToolShared {
             max_calls,
             calls: AtomicU32::new(0),
             trace: Mutex::new(Vec::new()),
+            read: Mutex::new(std::collections::HashSet::new()),
         })
     }
 
@@ -71,6 +80,16 @@ impl ToolShared {
 
     pub fn base_ref(&self) -> &str {
         &self.base_ref
+    }
+
+    /// Remember that this run has seen the working-copy content of `path`.
+    fn record_read(&self, path: &Path) {
+        self.read.lock().unwrap().insert(path.to_path_buf());
+    }
+
+    /// Whether this run has read the working copy of `path`.
+    fn was_read(&self, path: &Path) -> bool {
+        self.read.lock().unwrap().contains(path)
     }
 
     pub fn call_count(&self) -> u32 {
@@ -276,6 +295,7 @@ pub async fn read_file(
         Err(e) => return format!("failed to read: {e}"),
     };
     let text = String::from_utf8_lossy(&bytes);
+    shared.record_read(&p);
     let lines: Vec<&str> = text.lines().collect();
     let total = lines.len();
 
@@ -306,11 +326,29 @@ pub async fn grep(
     shared: &ToolShared,
     pattern: &str,
     path: Option<&str>,
+    glob: Option<&str>,
+    ignore_case: bool,
+    literal: bool,
     context_lines: Option<u32>,
 ) -> String {
-    let re = match regex::Regex::new(pattern) {
+    let mut source = if literal {
+        regex::escape(pattern)
+    } else {
+        pattern.to_string()
+    };
+    if ignore_case {
+        source = format!("(?i){source}");
+    }
+    let re = match regex::Regex::new(&source) {
         Ok(r) => r,
         Err(e) => return format!("invalid regex: {e}"),
+    };
+    let file_filter = match glob {
+        Some(pattern) => match globset::Glob::new(pattern) {
+            Ok(g) => Some(g.compile_matcher()),
+            Err(e) => return format!("invalid glob filter: {e}"),
+        },
+        None => None,
     };
     let ctx = context_lines.unwrap_or(0) as usize;
 
@@ -339,6 +377,11 @@ pub async fn grep(
     let mut out = String::new();
     let mut matches = 0usize;
     'files: for rel in &files {
+        if let Some(filter) = file_filter.as_ref()
+            && !filter.is_match(rel)
+        {
+            continue;
+        }
         let abs = shared.workspace().join(rel);
         let Ok(meta) = std::fs::metadata(&abs) else {
             continue;
@@ -385,27 +428,101 @@ pub async fn grep(
     cap_output(out)
 }
 
-/// glob: find files by glob pattern, ≤100 results
-pub async fn glob(shared: &ToolShared, pattern: &str) -> String {
+/// glob: find files by glob pattern, ≤100 results (or LIMIT), optionally scoped to PATH
+pub async fn glob(
+    shared: &ToolShared,
+    pattern: &str,
+    path: Option<&str>,
+    limit: Option<u32>,
+) -> String {
     let matcher = match globset::Glob::new(pattern) {
         Ok(g) => g.compile_matcher(),
         Err(e) => return format!("invalid glob pattern: {e}"),
     };
+    let scope: Option<String> = match path {
+        Some(scoped) => match shared.resolve_path(scoped) {
+            Ok(abs) => {
+                let rel = abs
+                    .strip_prefix(shared.workspace())
+                    .unwrap_or(&abs)
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                Some(rel.trim_end_matches('/').to_string())
+            }
+            Err(e) => return e,
+        },
+        None => None,
+    };
+    let limit = limit
+        .unwrap_or(MAX_GLOB_RESULTS as u32)
+        .clamp(1, MAX_GLOB_LIMIT) as usize;
     let mut hits: Vec<String> = shared
         .walk_files()
         .into_iter()
         .filter(|f| matcher.is_match(f))
+        .filter(|f| match scope.as_deref() {
+            Some("") | None => true,
+            Some(scope) => f
+                .to_string_lossy()
+                .replace('\\', "/")
+                .starts_with(&format!("{scope}/")),
+        })
         .map(|f| f.to_string_lossy().replace('\\', "/"))
         .collect();
     hits.sort();
     let total = hits.len();
-    hits.truncate(MAX_GLOB_RESULTS);
+    hits.truncate(limit);
     if hits.is_empty() {
         return format!("no matches: {pattern}");
     }
     let mut out = hits.join("\n");
-    if total > MAX_GLOB_RESULTS {
+    if total > limit {
         out.push_str(&format!("\n... [truncated: {total} matches total]"));
+    }
+    out.push('\n');
+    out
+}
+
+/// list_dir: list one directory's entries, `dir/` for directories, bounded
+pub async fn list_dir(shared: &ToolShared, path: Option<&str>, limit: Option<u32>) -> String {
+    let relative = path.unwrap_or(".");
+    let abs = match shared.resolve_path(relative) {
+        Ok(p) => p,
+        Err(e) => return e,
+    };
+    if !abs.is_dir() {
+        return format!("list_dir error: {relative} is not a directory");
+    }
+    let limit = limit
+        .unwrap_or(MAX_LIST_ENTRIES as u32)
+        .clamp(1, MAX_LIST_LIMIT) as usize;
+    let entries = match std::fs::read_dir(&abs) {
+        Ok(entries) => entries,
+        Err(e) => return format!("list_dir error: cannot read {relative}: {e}"),
+    };
+    let mut rows: Vec<String> = Vec::new();
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+        if is_dir && SKIP_DIRS.contains(&name.as_str()) {
+            continue;
+        }
+        if is_dir {
+            rows.push(format!("{name}/"));
+        } else {
+            let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
+            rows.push(format!("{name} ({size} bytes)"));
+        }
+    }
+    rows.sort();
+    let total = rows.len();
+    rows.truncate(limit);
+    if rows.is_empty() {
+        return format!("{relative} is empty");
+    }
+    let mut out = rows.join("\n");
+    if total > limit {
+        out.push_str(&format!("\n... [truncated: {total} entries total]"));
     }
     out.push('\n');
     out
@@ -418,17 +535,17 @@ const MAX_WRITE_BYTES: usize = 256 * 1024;
 
 /// edit_file: exact, unique-match replacement (spec 11 §4). Never fuzzy:
 /// `old_string` must occur exactly once in the file.
-pub async fn edit_file(
-    shared: &ToolShared,
-    path: &str,
-    old_string: &str,
-    new_string: &str,
-) -> String {
-    if old_string.is_empty() {
-        return "edit_file error: old_string must not be empty".to_string();
+pub async fn edit_file(shared: &ToolShared, path: &str, edits: &[(String, String)]) -> String {
+    if edits.is_empty() {
+        return "edit_file error: edits must contain at least one replacement".to_string();
     }
-    if old_string == new_string {
-        return "edit_file error: old_string and new_string are identical".to_string();
+    for (index, (old, new)) in edits.iter().enumerate() {
+        if old.is_empty() {
+            return format!("edit_file error: edits[{index}].old_string must not be empty");
+        }
+        if old == new {
+            return format!("edit_file error: edits[{index}] replaces text with itself");
+        }
     }
     let p = match shared.resolve_path_for_write(path) {
         Ok(p) => p,
@@ -436,46 +553,76 @@ pub async fn edit_file(
     };
     let meta = match std::fs::metadata(&p) {
         Ok(m) => m,
-        Err(_) => {
-            return format!(
-                "edit_file error: file does not exist: {path} (use write_file to create it)"
-            );
-        }
+        Err(e) => return format!("edit_file error: cannot stat {path}: {e}"),
     };
     if meta.is_dir() {
         return format!("edit_file error: {path} is a directory");
     }
     if meta.len() > MAX_EDIT_FILE_BYTES {
         return format!(
-            "edit_file error: file too large ({} bytes), refusing to edit",
-            meta.len()
+            "edit_file error: {path} is {} bytes, larger than the {} byte edit limit",
+            meta.len(),
+            MAX_EDIT_FILE_BYTES
         );
     }
-    let bytes = match std::fs::read(&p) {
-        Ok(b) => b,
-        Err(e) => return format!("edit_file error: failed to read {path}: {e}"),
+    let original = match std::fs::read_to_string(&p) {
+        Ok(text) => text,
+        Err(e) => {
+            return format!(
+                "edit_file error: {path} is not readable as UTF-8 text, so exact replacement is impossible: {e}"
+            );
+        }
     };
-    let text = match String::from_utf8(bytes) {
-        Ok(t) => t,
-        Err(_) => return format!("edit_file error: {path} is not a UTF-8 text file"),
-    };
-    let count = text.matches(old_string).count();
-    if count == 0 {
-        return format!("edit_file error: old_string not found in {path}");
+
+    // Every replacement is matched against the ORIGINAL text (never against the
+    // result of the previous one), and one occurrence is required: an ambiguous
+    // match means the caller cannot say which site it meant.
+    let mut spans: Vec<(usize, usize, &str)> = Vec::with_capacity(edits.len());
+    for (index, (old, new)) in edits.iter().enumerate() {
+        let mut found = original.match_indices(old.as_str());
+        let Some((offset, _)) = found.next() else {
+            return format!(
+                "edit_file error: edits[{index}].old_string was not found in {path}; read the file and copy the text exactly"
+            );
+        };
+        if found.next().is_some() {
+            return format!(
+                "edit_file error: edits[{index}].old_string occurs more than once in {path}; include more surrounding context to make it unique"
+            );
+        }
+        spans.push((offset, offset + old.len(), new.as_str()));
     }
-    if count > 1 {
-        return format!(
-            "edit_file error: old_string matches {count} locations in {path}; it must be unique — include more surrounding context"
-        );
+    spans.sort_by_key(|(start, _, _)| *start);
+    for pair in spans.windows(2) {
+        if pair[1].0 < pair[0].1 {
+            return format!(
+                "edit_file error: two edits overlap in {path}; merge edits that touch the same block"
+            );
+        }
     }
-    let updated = text.replacen(old_string, new_string, 1);
+
+    let mut updated = String::with_capacity(original.len());
+    let mut cursor = 0usize;
+    for (start, end, replacement) in &spans {
+        updated.push_str(&original[cursor..*start]);
+        updated.push_str(replacement);
+        cursor = *end;
+    }
+    updated.push_str(&original[cursor..]);
+
     match std::fs::write(&p, updated.as_bytes()) {
-        Ok(()) => format!("edited {path} ({} -> {} bytes)", meta.len(), updated.len()),
+        Ok(()) => {
+            shared.record_read(&p);
+            format!(
+                "edited {path} ({} replacement(s), {} bytes)",
+                edits.len(),
+                updated.len()
+            )
+        }
         Err(e) => format!("edit_file error: failed to write {path}: {e}"),
     }
 }
 
-/// write_file: create or overwrite a whole file (spec 11 §4).
 pub async fn write_file(shared: &ToolShared, path: &str, content: &str) -> String {
     if content.len() > MAX_WRITE_BYTES {
         return format!(
@@ -489,6 +636,11 @@ pub async fn write_file(shared: &ToolShared, path: &str, content: &str) -> Strin
     };
     if p.is_dir() {
         return format!("write_file error: {path} is a directory");
+    }
+    if p.exists() && !shared.was_read(&p) {
+        return format!(
+            "write_file error: {path} already exists and this run has not read it; read it with read_file first, or use edit_file for a targeted change"
+        );
     }
     if let Some(parent) = p.parent()
         && let Err(e) = std::fs::create_dir_all(parent)
@@ -579,12 +731,15 @@ pub fn specs(profile: crate::agent::ToolProfile) -> Vec<ToolSpec> {
         },
         ToolSpec {
             name: "grep",
-            description: "Search the repository with a regular expression. Use it to find call sites of a function or type.",
+            description: "Search the repository with a regular expression. Use it to find call sites of a function or type. Returns matching lines with file paths and line numbers.",
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
                     "pattern": {"type": "string", "description": "Regular expression"},
                     "path": {"type": "string", "description": "Optional: limit to a file or directory"},
+                    "glob": {"type": "string", "description": "Optional: only search files matching this glob (e.g. **/*.rs)"},
+                    "ignore_case": {"type": "boolean", "description": "Optional: case-insensitive search"},
+                    "literal": {"type": "boolean", "description": "Optional: treat the pattern as literal text instead of a regex"},
                     "context_lines": {"type": "integer", "description": "Optional: context lines around each match"}
                 },
                 "required": ["pattern"]
@@ -596,9 +751,23 @@ pub fn specs(profile: crate::agent::ToolProfile) -> Vec<ToolSpec> {
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "pattern": {"type": "string", "description": "Glob pattern (e.g. src/**/*.rs)"}
+                    "pattern": {"type": "string", "description": "Glob pattern (e.g. src/**/*.rs)"},
+                    "path": {"type": "string", "description": "Optional: only search under this directory"},
+                    "limit": {"type": "integer", "description": "Optional: maximum results (default 100, max 1000)"}
                 },
                 "required": ["pattern"]
+            }),
+        },
+        ToolSpec {
+            name: "list_dir",
+            description: "List one directory's entries, with a trailing slash for directories. Use it to see what exists before reading.",
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Directory relative to the repository root (default the root)"},
+                    "limit": {"type": "integer", "description": "Optional: maximum entries (default 200, max 1000)"}
+                },
+                "required": []
             }),
         },
         ToolSpec {
@@ -616,20 +785,30 @@ pub fn specs(profile: crate::agent::ToolProfile) -> Vec<ToolSpec> {
     if profile == crate::agent::ToolProfile::ReadWrite {
         tools.push(ToolSpec {
             name: "edit_file",
-            description: "Replace exact text in an existing file. old_string must match exactly once — include enough surrounding context to make it unique.",
+            description: "Edit one file with exact text replacements, several disjoint edits in one call. Every old_string is matched against the original file (not incrementally) and must occur exactly once; overlapping edits are refused.",
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
                     "path": {"type": "string", "description": "File path relative to the repository root"},
-                    "old_string": {"type": "string", "description": "Exact text to replace (must occur exactly once in the file)"},
-                    "new_string": {"type": "string", "description": "Replacement text"}
+                    "edits": {
+                        "type": "array",
+                        "description": "One or more replacements. Merge edits that touch the same block into one entry.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "old_string": {"type": "string", "description": "Exact text to replace (must occur exactly once)"},
+                                "new_string": {"type": "string", "description": "Replacement text"}
+                            },
+                            "required": ["old_string", "new_string"]
+                        }
+                    }
                 },
-                "required": ["path", "old_string", "new_string"]
+                "required": ["path", "edits"]
             }),
         });
         tools.push(ToolSpec {
             name: "write_file",
-            description: "Create a new file or overwrite an existing file with the given content. Prefer edit_file for targeted changes to existing files.",
+            description: "Create a new file, or rewrite an existing file this run has already read. Prefer edit_file for targeted changes.",
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -667,14 +846,129 @@ fn arg_opt_str(arguments: &serde_json::Value, key: &str) -> Option<String> {
         .map(str::to_string)
 }
 
+fn arg_opt_bool(arguments: &serde_json::Value, key: &str) -> bool {
+    arguments
+        .get(key)
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
+}
+
+/// Argument contract per tool: name and JSON type.
+///
+/// A tool call with an unknown name or a wrong type is a mistake the model can
+/// fix only if it hears about it. Silently ignoring `start_line: "10"` would
+/// return a whole-file read while the model believes it read a range.
+type ArgumentSpec = &'static [(&'static str, &'static str)];
+
+fn argument_spec(tool: &str) -> Option<ArgumentSpec> {
+    Some(match tool {
+        "read_file" => &[
+            ("path", "string"),
+            ("start_line", "integer"),
+            ("end_line", "integer"),
+        ],
+        "grep" => &[
+            ("pattern", "string"),
+            ("path", "string"),
+            ("glob", "string"),
+            ("ignore_case", "boolean"),
+            ("literal", "boolean"),
+            ("context_lines", "integer"),
+        ],
+        "glob" => &[
+            ("pattern", "string"),
+            ("path", "string"),
+            ("limit", "integer"),
+        ],
+        "list_dir" => &[("path", "string"), ("limit", "integer")],
+        "show_base_file" => &[("path", "string")],
+        "edit_file" => &[("path", "string"), ("edits", "array")],
+        "write_file" => &[("path", "string"), ("content", "string")],
+        _ => return None,
+    })
+}
+
+fn type_matches(value: &serde_json::Value, kind: &str) -> bool {
+    match kind {
+        "string" => value.is_string(),
+        "integer" => value.is_u64() || value.is_i64(),
+        "boolean" => value.is_boolean(),
+        "array" => value.is_array(),
+        _ => true,
+    }
+}
+
+/// Reject unknown arguments and wrong types before the call runs.
+fn validate_arguments(tool: &str, arguments: &serde_json::Value) -> Result<(), String> {
+    let spec = argument_spec(tool).unwrap_or(&[]);
+    let Some(object) = arguments.as_object() else {
+        return Err(format!(
+            "invalid arguments for {tool}: expected a JSON object"
+        ));
+    };
+    for key in object.keys() {
+        if !spec.iter().any(|(name, _)| name == key) {
+            let expected = spec
+                .iter()
+                .map(|(name, _)| *name)
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(format!(
+                "invalid arguments for {tool}: unknown argument {key:?}; expected one of: {expected}"
+            ));
+        }
+    }
+    for (name, kind) in spec {
+        if let Some(value) = object.get(*name)
+            && !value.is_null()
+            && !type_matches(value, kind)
+        {
+            return Err(format!(
+                "invalid arguments for {tool}: {name:?} must be a {kind}"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// One `edits[]` entry of `edit_file`.
+fn parse_edits(arguments: &serde_json::Value) -> Result<Vec<(String, String)>, String> {
+    let Some(entries) = arguments.get("edits").and_then(serde_json::Value::as_array) else {
+        return Err(
+            "edit_file error: \"edits\" must be an array of {old_string, new_string}".to_string(),
+        );
+    };
+    let mut edits = Vec::with_capacity(entries.len());
+    for (index, entry) in entries.iter().enumerate() {
+        let old = entry.get("old_string").and_then(serde_json::Value::as_str);
+        let new = entry.get("new_string").and_then(serde_json::Value::as_str);
+        match (old, new) {
+            (Some(old), Some(new)) => edits.push((old.to_string(), new.to_string())),
+            _ => {
+                return Err(format!(
+                    "edit_file error: edits[{index}] needs string old_string and new_string"
+                ));
+            }
+        }
+    }
+    Ok(edits)
+}
+
 /// Execute one tool call by name. Errors are returned as text, never as a
 /// failure: a tool problem must not break the agentic loop (spec 04).
 pub async fn dispatch(name: &str, arguments: &serde_json::Value, shared: &ToolShared) -> String {
+    let empty = serde_json::Value::Object(serde_json::Map::new());
     let arguments = if arguments.is_null() {
-        &serde_json::Value::Object(serde_json::Map::new())
+        &empty
     } else {
         arguments
     };
+    if !argument_spec(name).is_some() {
+        return format!("unknown tool: {name}");
+    }
+    if let Err(message) = validate_arguments(name, arguments) {
+        return message;
+    }
     match name {
         "read_file" => match arg_str(arguments, "path") {
             Ok(path) => {
@@ -691,10 +985,14 @@ pub async fn dispatch(name: &str, arguments: &serde_json::Value, shared: &ToolSh
         "grep" => match arg_str(arguments, "pattern") {
             Ok(pattern) => {
                 let path = arg_opt_str(arguments, "path");
+                let glob = arg_opt_str(arguments, "glob");
                 grep(
                     shared,
                     &pattern,
                     path.as_deref(),
+                    glob.as_deref(),
+                    arg_opt_bool(arguments, "ignore_case"),
+                    arg_opt_bool(arguments, "literal"),
                     arg_opt_u64(arguments, "context_lines").map(|v| v as u32),
                 )
                 .await
@@ -702,20 +1000,34 @@ pub async fn dispatch(name: &str, arguments: &serde_json::Value, shared: &ToolSh
             Err(e) => e,
         },
         "glob" => match arg_str(arguments, "pattern") {
-            Ok(pattern) => glob(shared, &pattern).await,
+            Ok(pattern) => {
+                let path = arg_opt_str(arguments, "path");
+                glob(
+                    shared,
+                    &pattern,
+                    path.as_deref(),
+                    arg_opt_u64(arguments, "limit").map(|v| v as u32),
+                )
+                .await
+            }
             Err(e) => e,
         },
+        "list_dir" => {
+            let path = arg_opt_str(arguments, "path");
+            list_dir(
+                shared,
+                path.as_deref(),
+                arg_opt_u64(arguments, "limit").map(|v| v as u32),
+            )
+            .await
+        }
         "show_base_file" => match arg_str(arguments, "path") {
             Ok(path) => show_base_file(shared, &path).await,
             Err(e) => e,
         },
-        "edit_file" => match (
-            arg_str(arguments, "path"),
-            arg_str(arguments, "old_string"),
-            arg_str(arguments, "new_string"),
-        ) {
-            (Ok(path), Ok(old), Ok(new)) => edit_file(shared, &path, &old, &new).await,
-            (Err(e), ..) | (_, Err(e), _) | (_, _, Err(e)) => e,
+        "edit_file" => match (arg_str(arguments, "path"), parse_edits(arguments)) {
+            (Ok(path), Ok(edits)) => edit_file(shared, &path, &edits).await,
+            (Err(e), _) | (_, Err(e)) => e,
         },
         "write_file" => match (arg_str(arguments, "path"), arg_str(arguments, "content")) {
             (Ok(path), Ok(content)) => write_file(shared, &path, &content).await,
@@ -787,11 +1099,20 @@ mod tests {
     #[tokio::test]
     async fn grep_finds_callers() {
         let (_d, s) = setup();
-        let out = grep(&s, "helper", None, None).await;
+        let out = grep(&s, "helper", None, None, false, false, None).await;
         assert!(out.contains("src/main.rs:2:"));
         assert!(out.contains("src/util/mod.rs:1:"));
         // with context
-        let ctx = grep(&s, "helper", Some("src/main.rs"), Some(1)).await;
+        let ctx = grep(
+            &s,
+            "helper",
+            Some("src/main.rs"),
+            None,
+            false,
+            false,
+            Some(1),
+        )
+        .await;
         assert!(ctx.contains("src/main.rs:1:  fn main() {"));
         assert!(ctx.contains("src/main.rs:2:>     helper();"));
     }
@@ -799,7 +1120,7 @@ mod tests {
     #[tokio::test]
     async fn glob_matches() {
         let (_d, s) = setup();
-        let out = glob(&s, "**/*.rs").await;
+        let out = glob(&s, "**/*.rs", None, None).await;
         assert!(out.contains("src/main.rs"));
         assert!(out.contains("src/util/mod.rs"));
         assert!(!out.contains("README.md"));
@@ -833,7 +1154,12 @@ mod tests {
     #[tokio::test]
     async fn edit_file_unique_replace() {
         let (_d, s) = setup();
-        let out = edit_file(&s, "src/main.rs", "helper();", "helper_v2();").await;
+        let out = edit_file(
+            &s,
+            "src/main.rs",
+            &[("helper();".to_string(), "helper_v2();".to_string())],
+        )
+        .await;
         assert!(out.contains("edited src/main.rs"), "{out}");
         let content = std::fs::read_to_string(s.workspace().join("src/main.rs")).unwrap();
         assert!(content.contains("helper_v2();"));
@@ -843,36 +1169,41 @@ mod tests {
     async fn edit_file_error_paths() {
         let (_d, s) = setup();
         // not found
-        let out = edit_file(&s, "src/main.rs", "nonexistent_call();", "x();").await;
+        let out = edit_file(
+            &s,
+            "src/main.rs",
+            &[("nonexistent_call();".to_string(), "x();".to_string())],
+        )
+        .await;
         assert!(out.contains("not found"), "{out}");
         // not unique
         std::fs::write(s.workspace().join("dup.txt"), "a\na\nb\n").unwrap();
-        let out = edit_file(&s, "dup.txt", "a", "c").await;
-        assert!(out.contains("matches 2 locations"), "{out}");
+        let out = edit_file(&s, "dup.txt", &[("a".to_string(), "c".to_string())]).await;
+        assert!(out.contains("occurs more than once"), "{out}");
         // missing file
-        let out = edit_file(&s, "nope.txt", "a", "b").await;
-        assert!(out.contains("does not exist"), "{out}");
+        let out = edit_file(&s, "nope.txt", &[("a".to_string(), "b".to_string())]).await;
+        assert!(out.contains("cannot stat"), "{out}");
         // empty / identical
         assert!(
-            edit_file(&s, "dup.txt", "", "b")
+            edit_file(&s, "dup.txt", &[("".to_string(), "b".to_string())])
                 .await
                 .contains("must not be empty")
         );
         assert!(
-            edit_file(&s, "dup.txt", "a", "a")
+            edit_file(&s, "dup.txt", &[("a".to_string(), "a".to_string())])
                 .await
-                .contains("identical")
+                .contains("replaces text with itself")
         );
         // non-UTF-8
         std::fs::write(s.workspace().join("bin.dat"), [0xff, 0xfe, 0x00]).unwrap();
         assert!(
-            edit_file(&s, "bin.dat", "a", "b")
+            edit_file(&s, "bin.dat", &[("a".to_string(), "b".to_string())])
                 .await
-                .contains("not a UTF-8")
+                .contains("not readable as UTF-8")
         );
         // sandbox
         assert!(
-            edit_file(&s, "../evil.txt", "a", "b")
+            edit_file(&s, "../evil.txt", &[("a".to_string(), "b".to_string())])
                 .await
                 .contains("escape")
         );
@@ -889,6 +1220,10 @@ mod tests {
             "hello\n"
         );
         // overwrite
+        // Overwriting needs a prior read of the working copy.
+        let refused = write_file(&s, "README.md", "# replaced\n").await;
+        assert!(refused.contains("has not read it"), "{refused}");
+        let _ = read_file(&s, "README.md", None, None).await;
         let out = write_file(&s, "README.md", "# replaced\n").await;
         assert!(out.contains("wrote README.md"), "{out}");
         assert_eq!(
