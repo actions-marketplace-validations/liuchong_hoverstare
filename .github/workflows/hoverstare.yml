@@ -118,6 +118,18 @@ jobs:
             done
             printf '%s' "$found"
           }
+          ref="$DISPATCH_VERSION"
+          # Recent comments newest-first, then the event's own bodies. The last
+          # marker inside each text wins, so the newest instruction is the one
+          # meant.
+          if [ -z "$ref" ] && [ -n "$NUMBER" ]; then
+            bodies=$(gh api "repos/$GITHUB_REPOSITORY/issues/$NUMBER/comments?per_page=30" \
+              --jq '.[].body' 2>/dev/null | tac || true)
+            for text in "$COMMENTS" "$bodies"; do
+              found=$(extract "$text")
+              if [ -n "$found" ]; then ref="$found"; break; fi
+            done
+          fi
           if [ -z "$ref" ]; then
             for text in "$COMMENTS" "$REVIEW_BODY" "$PR_BODY" "$ISSUE_BODY"; do
               found=$(extract "$text")
