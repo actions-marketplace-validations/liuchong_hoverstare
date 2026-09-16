@@ -485,11 +485,17 @@ pub async fn glob(
 
 /// list_dir: list one directory's entries, `dir/` for directories, bounded
 pub async fn list_dir(shared: &ToolShared, path: Option<&str>, limit: Option<u32>) -> String {
-    let relative = path.unwrap_or(".");
-    let abs = match shared.resolve_path(relative) {
-        Ok(p) => p,
-        Err(e) => return e,
+    // "." and an omitted path both mean the repository root: the sandbox
+    // normalizes a bare "." away, so it is resolved directly.
+    let relative = path.map(str::trim).filter(|p| !p.is_empty() && *p != ".");
+    let abs = match relative {
+        Some(relative) => match shared.resolve_path(relative) {
+            Ok(p) => p,
+            Err(e) => return e,
+        },
+        None => shared.workspace().to_path_buf(),
     };
+    let relative = relative.unwrap_or(".");
     if !abs.is_dir() {
         return format!("list_dir error: {relative} is not a directory");
     }
@@ -1124,6 +1130,159 @@ mod tests {
         assert!(out.contains("src/main.rs"));
         assert!(out.contains("src/util/mod.rs"));
         assert!(!out.contains("README.md"));
+    }
+
+    #[tokio::test]
+    async fn edit_file_applies_several_disjoint_edits_in_one_call() {
+        let (_d, s) = setup();
+        let out = edit_file(
+            &s,
+            "src/main.rs",
+            &[
+                ("helper();".to_string(), "helper_v2();".to_string()),
+                ("fn main".to_string(), "fn main_entry".to_string()),
+            ],
+        )
+        .await;
+        assert!(out.contains("2 replacement(s)"), "{out}");
+        let after = std::fs::read_to_string(s.workspace().join("src/main.rs")).unwrap();
+        assert!(after.contains("helper_v2()"));
+        assert!(after.contains("fn main_entry"));
+    }
+
+    #[tokio::test]
+    async fn a_rejected_multi_edit_leaves_the_file_untouched() {
+        let (_d, s) = setup();
+        let target = s.workspace().join("src/main.rs");
+        let before = std::fs::read_to_string(&target).unwrap();
+        // The second edit cannot be found: nothing is written at all.
+        let out = edit_file(
+            &s,
+            "src/main.rs",
+            &[
+                ("helper();".to_string(), "helper_v2();".to_string()),
+                ("not in this file".to_string(), "x".to_string()),
+            ],
+        )
+        .await;
+        assert!(out.contains("was not found"), "{out}");
+        assert_eq!(before, std::fs::read_to_string(&target).unwrap());
+        // Overlapping edits are refused the same way.
+        let out = edit_file(
+            &s,
+            "src/main.rs",
+            &[
+                ("fn main()".to_string(), "fn entry()".to_string()),
+                ("main() {".to_string(), "start() {".to_string()),
+            ],
+        )
+        .await;
+        assert!(out.contains("overlap"), "{out}");
+        assert_eq!(before, std::fs::read_to_string(&target).unwrap());
+    }
+
+    #[tokio::test]
+    async fn write_file_refuses_to_clobber_an_unread_file() {
+        let (_d, s) = setup();
+        let target = s.workspace().join("README.md");
+        let before = std::fs::read_to_string(&target).unwrap();
+        let refused = write_file(&s, "README.md", "// rewritten\n").await;
+        assert!(refused.contains("has not read it"), "{refused}");
+        assert_eq!(before, std::fs::read_to_string(&target).unwrap());
+        // Reading it makes the same write legal, and a new file never needs one.
+        let _ = read_file(&s, "README.md", None, None).await;
+        let written = write_file(&s, "README.md", "// rewritten\n").await;
+        assert!(written.contains("wrote"), "{written}");
+        let created = write_file(&s, "src/brand-new.rs", "// new\n").await;
+        assert!(created.contains("wrote"), "{created}");
+    }
+
+    #[tokio::test]
+    async fn grep_filters_by_glob_case_and_literal() {
+        let (_d, s) = setup();
+        std::fs::write(s.workspace().join("notes.md"), "helper() in markdown\n").unwrap();
+        let scoped = grep(&s, "helper", None, Some("**/*.md"), false, false, None).await;
+        assert!(scoped.contains("notes.md"), "{scoped}");
+        assert!(!scoped.contains("main.rs"), "{scoped}");
+        let insensitive = grep(&s, "HELPER", None, None, true, false, None).await;
+        assert!(insensitive.contains("main.rs"), "{insensitive}");
+        let literal = grep(&s, "helper()", None, None, false, true, None).await;
+        assert!(literal.contains("main.rs"), "{literal}");
+        // An unclosed paren is an invalid regex; literal mode must still work.
+        let literal_paren = grep(&s, "(unclosed", None, None, false, true, None).await;
+        assert!(literal_paren.contains("no matches"), "{literal_paren}");
+        let invalid_regex = grep(&s, "(unclosed", None, None, false, false, None).await;
+        assert!(invalid_regex.contains("invalid regex"), "{invalid_regex}");
+    }
+
+    #[tokio::test]
+    async fn glob_scopes_to_a_directory_and_honours_a_limit() {
+        let (_d, s) = setup();
+        let all = glob(&s, "**/*.rs", None, None).await;
+        assert!(all.contains("src/main.rs"), "{all}");
+        let scoped = glob(&s, "**/*.txt", Some("src"), None).await;
+        assert!(scoped.contains("no matches"), "{scoped}");
+        let limited = glob(&s, "**/*.rs", None, Some(1)).await;
+        assert!(limited.contains("truncated"), "{limited}");
+    }
+
+    #[tokio::test]
+    async fn list_dir_names_directories_and_bounds_entries() {
+        let (_d, s) = setup();
+        let listing = list_dir(&s, None, None).await;
+        assert!(listing.contains("src/"), "{listing}");
+        assert!(listing.contains("README.md"), "{listing}");
+        let single = list_dir(&s, Some("src"), Some(1)).await;
+        assert!(!single.is_empty());
+        let outside = list_dir(&s, Some("../"), None).await;
+        assert!(outside.contains("escape"), "{outside}");
+    }
+
+    #[tokio::test]
+    async fn dispatch_rejects_unknown_and_mistyped_arguments() {
+        let (_d, s) = setup();
+        let unknown = dispatch(
+            "read_file",
+            &serde_json::json!({"path": "src/main.rs", "start": 1}),
+            &s,
+        )
+        .await;
+        assert!(unknown.contains("unknown argument"), "{unknown}");
+        // A string where a line number belongs is reported, not silently ignored.
+        let mistyped = dispatch(
+            "read_file",
+            &serde_json::json!({"path": "src/main.rs", "start_line": "10"}),
+            &s,
+        )
+        .await;
+        assert!(mistyped.contains("must be a integer"), "{mistyped}");
+        let not_object = dispatch("grep", &serde_json::json!(["helper"]), &s).await;
+        assert!(
+            not_object.contains("expected a JSON object"),
+            "{not_object}"
+        );
+        let unknown_tool = dispatch("rm_rf", &serde_json::json!({}), &s).await;
+        assert!(unknown_tool.contains("unknown tool"), "{unknown_tool}");
+        // A well-formed call still runs.
+        let ok = dispatch("glob", &serde_json::json!({"pattern": "**/*.rs"}), &s).await;
+        assert!(ok.contains("src/main.rs"), "{ok}");
+    }
+
+    #[tokio::test]
+    async fn dispatch_edits_through_the_array_form() {
+        let (_d, s) = setup();
+        let out = dispatch(
+            "edit_file",
+            &serde_json::json!({
+                "path": "src/main.rs",
+                "edits": [{"old_string": "helper();", "new_string": "helper_three();"}]
+            }),
+            &s,
+        )
+        .await;
+        assert!(out.contains("edited"), "{out}");
+        let content = std::fs::read_to_string(s.workspace().join("src/main.rs")).unwrap();
+        assert!(content.contains("helper_three()"));
     }
 
     #[tokio::test]
