@@ -1025,6 +1025,44 @@ mod tests {
     }
 
     #[test]
+    fn dequeue_takes_the_first_open_item_that_still_carries_an_instruction() {
+        let comments = vec![
+            comment(10, "@hoverstare 先做 A"),
+            comment(11, "@hoverstare 再做 B"),
+            comment(12, "@hoverstare go"),
+        ];
+        let mut queue = QueueState::new();
+        queue.enqueue(11, ItemKind::Human, "再做 B").unwrap();
+        queue.enqueue(10, ItemKind::Human, "先做 A").unwrap();
+        queue.enqueue(12, ItemKind::Human, "go").unwrap();
+        // Humans come in comment order, so the older instruction runs first and
+        // its text is read back from the comment rather than trusted from the
+        // marker.
+        assert_eq!(dequeue(&queue, &comments), Some((10, "先做 A".into())));
+        queue.set_state(10, ItemState::Done);
+        assert_eq!(dequeue(&queue, &comments), Some((11, "再做 B".into())));
+        // A queued `go`/`merge` comment is not an instruction: it is skipped
+        // instead of being handed to the model as work.
+        queue.set_state(11, ItemState::Done);
+        assert_eq!(dequeue(&queue, &comments), None);
+    }
+
+    #[test]
+    fn dequeue_is_none_when_nothing_is_open_or_the_comment_is_gone() {
+        let comments = vec![comment(20, "@hoverstare 只做这一件")];
+        let empty = QueueState::new();
+        assert_eq!(dequeue(&empty, &comments), None);
+        let mut queue = QueueState::new();
+        queue.enqueue(20, ItemKind::Human, "只做这一件").unwrap();
+        assert_eq!(dequeue(&queue, &comments), Some((20, "只做这一件".into())));
+        // The source comment is gone (deleted, or a review body with no id):
+        // nothing is invented for it.
+        assert_eq!(dequeue(&queue, &[]), None);
+        queue.set_state(20, ItemState::Failed);
+        assert_eq!(dequeue(&queue, &comments), None);
+    }
+
+    #[test]
     fn build_source_line_names_mode_and_short_sha() {
         let sha = "4d407d3712345678901234567890abcdefabcdef";
         let line = build_source_line(Some("flow-pin"), Some(sha)).expect("rendered");
