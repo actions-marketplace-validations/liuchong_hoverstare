@@ -16,8 +16,7 @@ use crate::config::{Actor, Config, PermissionKey};
 use crate::develop::{self};
 use crate::devqueue::{
     Idle, ItemKind, ItemState, MergeGate, Outcome, QUEUE_PREFIX, QueueState, RoundRecord,
-    checklist, instruction, merge_gate, precheck, round_note, self_trigger, state_after_round,
-    summary_line,
+    checklist, instruction, merge_gate, precheck, round_note, state_after_round, summary_line,
 };
 use crate::event::{DevEvent, DevKind};
 use crate::git::GitRepo;
