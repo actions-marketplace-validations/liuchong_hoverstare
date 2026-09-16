@@ -960,6 +960,23 @@ fn parse_edits(arguments: &serde_json::Value) -> Result<Vec<(String, String)>, S
     Ok(edits)
 }
 
+/// Whether TEXT looks like a tool call written out instead of an answer.
+///
+/// Models do this when the tool menu is empty (the budget is spent): they keep
+/// asking for a tool in prose, wrapped in the provider's markup, and a loop
+/// that treats any text as a final answer will report a round that did nothing
+/// as if it had finished.
+pub fn looks_like_tool_markup(text: &str, specs: &[ToolSpec]) -> bool {
+    let lowered = text.to_ascii_lowercase();
+    specs.iter().any(|spec| {
+        let name = spec.name.to_ascii_lowercase();
+        lowered.contains(&format!("<{name}"))
+            || lowered.contains(&format!("</{name}>"))
+            || lowered.contains(&format!("\"{name}\": {{"))
+    }) || lowered.contains("<function_call")
+        || lowered.contains("<tool_call")
+}
+
 /// Execute one tool call by name. Errors are returned as text, never as a
 /// failure: a tool problem must not break the agentic loop (spec 04).
 pub async fn dispatch(name: &str, arguments: &serde_json::Value, shared: &ToolShared) -> String {

@@ -39,6 +39,9 @@ pub fn output_budget(window: u64) -> u64 {
     (window / 16).clamp(MIN_OUTPUT_TOKENS, MAX_OUTPUT_TOKENS_CEILING)
 }
 
+/// How many "that was a tool call, not an answer" replies in a row we tolerate.
+const TOOL_MARKUP_ATTEMPTS: u32 = 2;
+
 /// How many empty answers in a row are tolerated before the run fails.
 ///
 /// An empty reply is a real provider failure mode, not an exception: a
@@ -329,6 +332,7 @@ impl AgentLoop {
             let mut ledger = WorkLedger::from_items(&items);
             let mut rounds = 0u32;
             let mut empty_replies = 0u32;
+            let mut markup_replies = 0u32;
             let max_rounds = self.round_budget(req.budget.max_tool_calls);
             // Signature -> result of the last execution. A model that repeats a
             // call whose result cannot change would otherwise spend the budget
@@ -433,6 +437,25 @@ impl AgentLoop {
                                 items.push(ConversationItem::User {
                                     text: "[note] your previous reply was empty. Answer now with \
                                            the required output and nothing else."
+                                        .to_string(),
+                                });
+                                continue;
+                            }
+                            if tools::looks_like_tool_markup(&reply.text, &specs) {
+                                markup_replies += 1;
+                                if markup_replies >= TOOL_MARKUP_ATTEMPTS {
+                                    break Err(AgentError::Backend(
+                                        "the model kept writing a tool call instead of answering"
+                                            .to_string(),
+                                    ));
+                                }
+                                warn!(
+                                    "model answered with tool markup instead of text; asking for prose"
+                                );
+                                items.push(ConversationItem::User {
+                                    text: "[note] that was a tool call written as text, not an \
+                                           answer. Tools are not available for this reply. Answer \
+                                           now in plain prose with what you already have."
                                         .to_string(),
                                 });
                                 continue;
@@ -1271,6 +1294,46 @@ mod tests {
             .unwrap();
         assert_eq!(run.usage.cached_input_tokens, 750);
         assert_eq!(run.usage.cache_hit_ratio(), Some(0.75));
+    }
+
+    #[tokio::test]
+    async fn a_tool_call_written_as_text_is_not_accepted_as_an_answer() {
+        let (_dir, shared) = two_file_workspace();
+        let counter = Arc::new(AtomicUsize::new(0));
+        let client = ScriptedClient::new(vec![scripted(move |_index, _call| {
+            if counter.fetch_add(1, Ordering::SeqCst) == 0 {
+                return Ok(reply("<read_file>\n<path>a.rs</path>\n</read_file>"));
+            }
+            Ok(reply("final"))
+        })]);
+        let run = loop_with(client.clone(), 100_000)
+            .review(request(Some(shared), 8))
+            .await
+            .unwrap();
+        assert_eq!(run.raw_output, "final");
+        let second = &client.calls()[1];
+        assert!(
+            second.messages.iter().any(|item| matches!(
+                item,
+                ConversationItem::User { text } if text.contains("written as text")
+            )),
+            "the model is told that markup is not an answer"
+        );
+    }
+
+    #[tokio::test]
+    async fn persistent_tool_markup_fails_the_run_instead_of_reporting_success() {
+        let (_dir, shared) = two_file_workspace();
+        let client = ScriptedClient::new(vec![scripted(|_index, _call| {
+            Ok(reply("<grep>\n<pattern>x</pattern>\n</grep>"))
+        })]);
+        let result = loop_with(client.clone(), 100_000)
+            .review(request(Some(shared), 8))
+            .await;
+        assert!(matches!(
+            result,
+            Err(AgentError::Backend(message)) if message.contains("tool call instead of answering")
+        ));
     }
 
     #[tokio::test]
