@@ -512,6 +512,30 @@ fn dequeue(queue: &QueueState, comments: &[IssueComment]) -> Option<(u64, String
         .find_map(|item| instruction(comments, item.src).map(|text| (item.src, text)))
 }
 
+/// How a finished round ends (spec 11 §6). The automatic chain only continues
+/// after progress that landed, only while the fuse allows and only while work
+/// remains; the fuse has its own ending so the thread does not go quiet without
+/// saying why.
+#[derive(Debug, PartialEq, Eq)]
+enum RoundEnd {
+    /// Post a `@hoverstare continue` carrying this round's marker.
+    SelfTrigger,
+    /// Say that the cap, not the queue, stopped the chain.
+    FuseReached,
+    /// Nothing more to do.
+    Stop,
+}
+
+fn round_end(round: u32, outcome: Outcome, queue: &QueueState) -> RoundEnd {
+    if self_trigger(round, MAX_PR_ROUNDS, outcome, queue) {
+        return RoundEnd::SelfTrigger;
+    }
+    if outcome == Outcome::Ok && round >= MAX_PR_ROUNDS && queue.open_count() > 0 {
+        return RoundEnd::FuseReached;
+    }
+    RoundEnd::Stop
+}
+
 /// One dev round on the PR branch: pick the queued task, sync to remote head,
 /// develop, push, report (spec 11 §6).
 async fn pr_dev_round(
@@ -755,29 +779,30 @@ async fn pr_dev_round(
     // An empty queue never self-triggers, so the chain ends when the queue drains.
     // The comment rides with this round's marker (first line stays the command),
     // so the next run knows which round it is claiming.
-    if self_trigger(round, MAX_PR_ROUNDS, outcome_st, &queue) {
-        gh.create_issue_comment(
-            repo,
-            ev.number,
-            &format!("@hoverstare continue\n\n{}", marker_text(&marker)),
-        )
-        .await?;
-        return Ok(format!(
-            "round {round} done; self-triggered round {}",
-            round + 1
-        ));
-    }
-    // Say so when the fuse, not the queue, is what stopped the chain: otherwise
-    // the thread just goes quiet and a reader cannot tell why.
-    if ok && round >= MAX_PR_ROUNDS && queue.open_count() > 0 {
-        gh.create_issue_comment(
-            repo,
-            ev.number,
-            &format!(
-                "已达自动轮次上限（{MAX_PR_ROUNDS}），自动链在此停止；需要继续请人工下达指令。"
-            ),
-        )
-        .await?;
+    match round_end(round, outcome_st, &queue) {
+        RoundEnd::SelfTrigger => {
+            gh.create_issue_comment(
+                repo,
+                ev.number,
+                &format!("@hoverstare continue\n\n{}", marker_text(&marker)),
+            )
+            .await?;
+            return Ok(format!(
+                "round {round} done; self-triggered round {}",
+                round + 1
+            ));
+        }
+        RoundEnd::FuseReached => {
+            gh.create_issue_comment(
+                repo,
+                ev.number,
+                &format!(
+                    "已达自动轮次上限（{MAX_PR_ROUNDS}），自动链在此停止；需要继续请人工下达指令。"
+                ),
+            )
+            .await?;
+        }
+        RoundEnd::Stop => {}
     }
     Ok(format!("round {round} done"))
 }
@@ -1022,6 +1047,30 @@ mod tests {
                 login: "alice".into(),
             },
         }
+    }
+
+    #[test]
+    fn round_end_continues_only_with_landed_progress_and_work_left() {
+        let mut queue = QueueState::new();
+        queue.enqueue(30, ItemKind::Human, "剩下的活").unwrap();
+        // Progress landed and work remains: pull the next round.
+        assert_eq!(round_end(1, Outcome::Ok, &queue), RoundEnd::SelfTrigger);
+        // A round that changed nothing stops in front of the human instead of
+        // looping on the same queue (spec 11 §6 failure-stop).
+        assert_eq!(round_end(1, Outcome::Nochange, &queue), RoundEnd::Stop);
+        assert_eq!(round_end(1, Outcome::Failed, &queue), RoundEnd::Stop);
+        // The cap stops the automatic chain and says so.
+        assert_eq!(
+            round_end(MAX_PR_ROUNDS, Outcome::Ok, &queue),
+            RoundEnd::FuseReached
+        );
+        // An empty queue never pulls another round, even at a low round number.
+        let drained = QueueState::new();
+        assert_eq!(round_end(1, Outcome::Ok, &drained), RoundEnd::Stop);
+        assert_eq!(
+            round_end(MAX_PR_ROUNDS, Outcome::Ok, &drained),
+            RoundEnd::Stop
+        );
     }
 
     #[test]
