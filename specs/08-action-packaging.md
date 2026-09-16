@@ -143,7 +143,10 @@ inputs：
   让流程中途换代码，也不会因此每轮重建。标记接受的 ref：`master`、release tag（`vX.Y.Z`）、
   或**可从默认分支到达的 commit**；分支名一律拒绝（任何能开 PR 的人都能写标记，而 workflow 有写权限）。
   手工覆盖仍可用 `hoverstare-pin: master` 或手动触发的 `version` 输入。
-- **提交签名**：开发轮的提交必须签名。CI 上导入 `HOVERSTARE_GPG_PRIVATE_KEY`（armored 私钥）
+- **提交签名与 committer**：开发轮的提交必须签名，且**署名覆盖时 committer 与 author 同为人**
+  （不是 bot）。原因：GitHub 按 **committer** 校验签名，App 账号无法持有签名密钥——即使签名正确，
+  committer 是 bot 的提交在 GitHub 上也是 `unknown_key`（实测）。co-author 尾注仍然标明 bot 的贡献。
+  签名密钥：CI 上导入 `HOVERSTARE_GPG_PRIVATE_KEY`（armored 私钥）
   与可选 `HOVERSTARE_GPG_PASSPHRASE` 后设置 `user.signingkey` + `commit.gpgsign=true`，并在导入后
   做一次空提交自检（签不出来直接失败，避免静默产出未签名提交）。未配置 secret 时该步骤跳过，
   行为与之前一致（提交为未签名）。本地 `hoverstare develop --task` 走本机 git 配置，同样受

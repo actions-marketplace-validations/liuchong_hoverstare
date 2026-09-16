@@ -113,9 +113,16 @@ pub fn resolve_commit_identity(
     if let Some(author) = override_.and_then(parse_identity) {
         let trailer = (mode == CommitIdentity::Coauthor)
             .then(|| format!("Co-authored-by: {BOT_NAME} <{BOT_EMAIL}>"));
+        // Committer = author here, not the bot. GitHub verifies a signature
+        // against the *committer*: with the bot as committer even a correctly
+        // signed commit is reported as `unknown_key`, because an app account
+        // cannot hold signing keys. Verified commits therefore require the
+        // human to be the committer (the co-author trailer still credits the
+        // bot). Observed, not assumed: a probe commit signed with the
+        // maintainer key and committed as the bot came back unverified.
         return CommitAuthor {
+            committer: author.clone(),
             author,
-            committer: bot_identity(),
             trailer,
         };
     }
@@ -455,6 +462,10 @@ mod tests {
         assert_eq!(self_triggered.author.name, "刘冲");
         assert!(self_triggered.trailer.is_some());
         // `author` mode has no trailer; `bot` mode ignores the override.
+        assert_eq!(
+            local.committer.email, local.author.email,
+            "the committer must carry the override: GitHub verifies signatures\n             against the committer, and the bot cannot hold a signing key"
+        );
         let plain = resolve_commit_identity(CommitIdentity::Author, None, override_);
         assert_eq!(plain.author.name, "刘冲");
         assert!(plain.trailer.is_none());
