@@ -49,11 +49,21 @@ concurrency:
         && format('dev-{0}', github.event.issue.number || github.event.pull_request.number))
       || (github.event.pull_request.number || github.event.issue.number || inputs.pr)
     }}
-  cancel-in-progress: true
+  # 评论/review 类事件是开发轮入口：取消会把"正在跑的那一轮"杀掉，而这正是
+  # 自驱动队列要避免的（新任务开工时老任务还没完成）。这些事件改成排队等待，
+  # 其余事件（PR 审查）保持取消语义。见 spec 11 自驱动队列。
+  cancel-in-progress: >-
+    ${{
+      !(github.event_name == 'issue_comment'
+        || github.event_name == 'pull_request_review_comment'
+        || github.event_name == 'pull_request_review')
+    }}
 
 jobs:
   hoverstare:
     runs-on: ubuntu-latest
+    # 排队语义下没有取消可依赖：一轮卡住会一直占着并发组，必须有硬上限。
+    timeout-minutes: 30
     # bot 自己的评论一律不触发，除非是自触发命令（spec 11 §6 熔断由 devagent 轮次计数保证）
     if: >-
       github.event_name == 'workflow_dispatch' ||
