@@ -82,6 +82,10 @@ GITHUB_TOKEN 的 push 不触发 CI，会导致 checks 不跑、无法合并。
 - 写入后返回简短确认（路径 + 字节数），不回显全文（省 token）。
 - Budget 复用：`max_tool_calls` 对读+写统一计数；默认 implement 轮
   budget=40 次调用、timeout=10min。
+- **轮次开始先与 base 同步**：开发前把 base 分支 merge 进 PR 分支，成功且产生合并提交就立刻推送。
+  原因：分支落后于 base 会让 PR 变成冲突态，而 GitHub 在冲突态**不运行任何 `pull_request` check**——
+  既没有红也没有绿，round 会在"没有 CI 的世界"里盲开发。冲突时中止合并（`git merge --abort`，
+  工作区留给人）并在 PR 上明确报告，等人类解决；bot 不做 rebase。
 - **超时不重试**：一轮把整个预算用满仍没结束（`AgentError::Timeout`）时不换预算重跑——
   同样的分钟数会得到同样的结果，还会一直占着并发组。直接失败并说明"拆分任务或提高预算"。
   空输出/畸形响应仍然重试（3 次尝试，spec 04）。

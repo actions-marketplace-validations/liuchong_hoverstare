@@ -475,6 +475,39 @@ async fn pr_dev_round(
     git.checkout_reset(branch, &format!("refs/remotes/devpush/{branch}"))
         .await?;
 
+    // Merge the base branch before developing. A branch that drifted behind its
+    // base turns the pull request conflicted, and GitHub then runs no
+    // `pull_request` checks at all: the round would develop with no CI and no
+    // failure to read. A clean merge is pushed immediately, so the pull request
+    // stays mergeable even when this round changes nothing else.
+    let base = &pr.base.ref_name;
+    git.fetch("devpush", &format!("{base}:refs/remotes/devpush/{base}"))
+        .await?;
+    let head_before = git.run(&["rev-parse", "HEAD"]).await?;
+    match git.merge_ref(&format!("refs/remotes/devpush/{base}")).await {
+        Ok(()) => {
+            if git.run(&["rev-parse", "HEAD"]).await? != head_before {
+                git.push("devpush", branch).await?;
+                tracing::info!("dev round: merged {base} into {branch} before developing");
+            }
+        }
+        Err(crate::git::GitError::Conflict(detail)) => {
+            gh.create_issue_comment(
+                repo,
+                ev.number,
+                &format!(
+                    "⚠️ 分支 `{branch}` 与 `{base}` 冲突，本轮未开发。\n\n\
+                     冲突需要人工解决（bot 不做 rebase）：请把 `{base}` 合进分支或改掉冲突文件，\
+                     然后重新下达指令。\n\n<details><summary>git 输出</summary>\n\n```\n{}\n```\n</details>",
+                    detail.chars().take(1500).collect::<String>()
+                ),
+            )
+            .await?;
+            return Ok("conflict with base; round skipped".into());
+        }
+        Err(error) => return Err(error.into()),
+    }
+
     let task = format!(
         "You are developing on the branch `{branch}` of PR #{}.\n\n[Instruction from the PR discussion]\n{}\n\n\
          Implement the instruction now, staying minimal and focused.",

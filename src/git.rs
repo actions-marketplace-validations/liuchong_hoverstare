@@ -107,6 +107,40 @@ impl GitRepo {
         Err(GitError::Conflict(stderr))
     }
 
+    /// Merge `reference` into the current branch, leaving a merge commit.
+    ///
+    /// A development branch drifts behind its base while other work lands, and a
+    /// conflicted pull request stops GitHub from running `pull_request` checks
+    /// at all — no CI, no failure, no feedback. So a round syncs before it
+    /// develops: on conflict the merge is aborted (the tree is left exactly as
+    /// the human will find it) and reported as [`GitError::Conflict`].
+    pub async fn merge_ref(&self, reference: &str) -> Result<(), GitError> {
+        let out = tokio::process::Command::new("git")
+            .args(["merge", "--no-edit", reference])
+            .current_dir(&self.root)
+            .output()
+            .await
+            .map_err(|e| GitError::Other(format!("merge: spawn: {e}")))?;
+        if out.status.success() {
+            return Ok(());
+        }
+        let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        let _ = tokio::process::Command::new("git")
+            .args(["merge", "--abort"])
+            .current_dir(&self.root)
+            .output()
+            .await;
+        Err(GitError::Conflict(stderr))
+    }
+
+    /// Whether the working tree has unmerged paths (a merge in progress).
+    pub async fn has_conflicts(&self) -> Result<bool, GitError> {
+        let out = self
+            .run(&["diff", "--name-only", "--diff-filter=U"])
+            .await?;
+        Ok(!out.trim().is_empty())
+    }
+
     pub async fn add_all(&self) -> Result<(), GitError> {
         self.run(&["add", "-A"]).await.map(|_| ())
     }
@@ -235,6 +269,41 @@ mod tests {
         assert!(!repo.has_changes().await.unwrap());
         let log = repo.run(&["log", "--format=%an %s", "-1"]).await.unwrap();
         assert_eq!(log, "hoverstare[bot] feat: add b");
+    }
+
+    #[tokio::test]
+    async fn merging_the_base_is_clean_or_aborts_without_touching_the_tree() {
+        let (_d, repo) = fixture().await;
+        // A clean side branch merges into the development branch.
+        repo.run(&["checkout", "-q", "-b", "dev"]).await.unwrap();
+        std::fs::write(repo.root().join("dev.txt"), "dev\n").unwrap();
+        repo.add_all().await.unwrap();
+        repo.commit("dev work", "t", "t@t").await.unwrap();
+        repo.run(&["checkout", "-q", "master"]).await.unwrap();
+        std::fs::write(repo.root().join("base.txt"), "base\n").unwrap();
+        repo.add_all().await.unwrap();
+        repo.commit("base work", "t", "t@t").await.unwrap();
+        repo.run(&["checkout", "-q", "dev"]).await.unwrap();
+        repo.merge_ref("master").await.expect("clean merge");
+        assert!(repo.root().join("base.txt").exists());
+
+        // A conflicting branch is aborted, and the tree still holds the round's
+        // own work rather than a half-merged mess.
+        std::fs::write(repo.root().join("a.txt"), "dev side\n").unwrap();
+        repo.add_all().await.unwrap();
+        repo.commit("dev edits a", "t", "t@t").await.unwrap();
+        repo.run(&["checkout", "-q", "master"]).await.unwrap();
+        std::fs::write(repo.root().join("a.txt"), "master side\n").unwrap();
+        repo.add_all().await.unwrap();
+        repo.commit("master edits a", "t", "t@t").await.unwrap();
+        repo.run(&["checkout", "-q", "dev"]).await.unwrap();
+        let error = repo.merge_ref("master").await.expect_err("conflict");
+        assert!(matches!(error, GitError::Conflict(_)), "{error:?}");
+        assert!(!repo.has_conflicts().await.unwrap());
+        assert_eq!(
+            std::fs::read_to_string(repo.root().join("a.txt")).unwrap(),
+            "dev side\n"
+        );
     }
 
     #[tokio::test]

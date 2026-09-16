@@ -113,7 +113,7 @@ crates/bugbot/         # 别名 crate：re-export + 同入口二进制（同步�
 
 ```bash
 cargo build --workspace
-cargo test --workspace                          # 189 项（单元 + httpmock 合约）
+cargo test --workspace                          # 190 项（单元 + httpmock 合约）
 cargo fmt && cargo clippy --workspace --all-targets -- -D warnings
 ```
 
@@ -192,22 +192,31 @@ cargo fmt && cargo clippy --workspace --all-targets -- -D warnings
 19. **"用文字写工具调用"不是答案**：预算用尽后不再给工具，模型可能把工具调用写成
     正文标记（`<read_file>…`）——循环必须识别（`tools::looks_like_tool_markup`）并
     要求用散文作答，连续两次则明确失败；否则会把"什么都没做"的一轮当成成功上报。
-20. **前缀缓存是成本底线**：每次调用重发整段对话，只有公共前缀能命中 provider 缓存。
+20. **dogfood 不好用就先修 dogfood**：用 dogfood 推进任务时，凡遇到静默失败（没有 CI/没有
+    评论却没有产出）、空转、指令被吃掉、输出污染（工具标记/实验痕迹进正文或提交）、预算导致
+    的必然失败，或"每轮都要人重做同一件机械动作"，**立刻停下推进，先按 spec-first 修产品**，
+    带确定性测试与真实证据（run/评论链接、原始日志），记录到 §7 后**再回来推进**。判据是
+    "人类的真实使用会不会变差"，不是"是否违反某条既有实现"。详见 `.agents/rules/07-dogfood-loop.md`。
+21. **前缀缓存是成本底线**：每次调用重发整段对话，只有公共前缀能命中 provider 缓存。
     循环里后续调用必须是前一次的**追加**（不得重建/重排历史；压缩是唯一允许的前缀替换）。
     `Usage.cached_input_tokens` 会打日志（`run used ... (cached, X%)`）；长 run 命中率长期为 0
     就是前缀被改写了。改循环时不要破坏这条，测试里有 `each_call_extends_the_previous_one_*` 钉着。
-21. **思考模型的输出额度要够**：`max_output_tokens`（默认 window/16，下限 4096 上限 65536）
+22. **思考模型的输出额度要够**：`max_output_tokens`（默认 window/16，下限 4096 上限 65536）
     是**每次调用**的上限，**推理 token 也计入**。额度被推理吃光时 provider 返回空正文，
     日志形如 `empty model reply (n/3, reasoning=true)`，看起来像模型拒答、实际是额度太小；
     循环会重试并最终报错，见到这个错误先调大额度而不是怀疑模型。写死小值（如 8192）
     会在长任务上稳定复现该故障。
-22. **dogfood 可以钉版本自救**：master 上的**代码**坏掉时，dogfood 会连自己也跑不起来
+23. **轮次开始先与 base 同步**：分支落后于 base 会让 PR 冲突，而**冲突态下 GitHub 不跑任何
+    `pull_request` check**（没有红也没有绿），round 会在没有 CI 的世界里盲开发。开发轮现在
+    先 merge base、成功即推送；冲突则 abort 并回帖请人类解决（bot 不做 rebase）。这是
+    `.agents/rules/07-dogfood-loop.md` 的第一个实战案例。
+24. **dogfood 可以钉版本自救**：master 上的**代码**坏掉时，dogfood 会连自己也跑不起来
     （构建的就是坏代码）。自救入口有两个：`workflow_dispatch`（填 `version` + `pr`，维护者
     可指定任意 ref）或在 PR body / 评论里写 `hoverstare-pin: <ref>`（只接受 `master` 与
     release tag，防止外部 PR 指向自己控制的代码）。pin 只换二进制来源，工作区仍是被处理的
     代码；pin 构建在独立 worktree，冷编译约 3 分钟。注意 workflow 文件本身由 App 推不动，
     harness 改动只能由人提交。
-23. **bot 写的代码不过 fmt**：bot 不能执行代码，每轮都可能引入 rustfmt 偏差，
+25. **bot 写的代码不过 fmt**：bot 不能执行代码，每轮都可能引入 rustfmt 偏差，
     不要让它逐条手改 18 处格式——人跑 `cargo fmt` 提一个 style commit 才是
     设计内的协作方式（人类可通过 commit 调整分支）。
 
@@ -322,3 +331,4 @@ bot 不主动去扫 CI。这次把「只坐在 github.com、不靠本机 CLI」�
 - `04-testing.md` — 测试约定与常用模式
 - `05-release.md` — 四渠道发布流程与双 crates 同步
 - `06-llm-providers.md` — 各 provider 的脾气与适配
+- `07-dogfood-loop.md` — dogfood 驱动开发，以及"工具不好用就先修工具"的工作方法（必读）
