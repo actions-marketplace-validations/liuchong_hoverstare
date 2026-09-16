@@ -41,6 +41,7 @@ Commands:
 | env `HOVERSTARE_COMPACTION_THRESHOLD_RATIO` / `HOVERSTARE_COMPACTION_KEEP_RATIO` | 覆盖压缩阈值与保留比例 |
 | env `HOVERSTARE_SUMMARY_MAX_CHARS` | 覆盖模型摘要长度上限 |
 | env `HOVERSTARE_MAX_ROUNDS` | 覆盖单次 run 的模型调用轮数上限（0 = 由工具预算推导） |
+| env `HOVERSTARE_MAX_OUTPUT_TOKENS` | 覆盖单次调用的输出上限（0 = 由窗口推导） |
 
 非 Actions 环境本地调试时，`--pr` + `GITHUB_REPOSITORY` + 两个 token 即可运行。
 
@@ -108,6 +109,11 @@ summary_max_chars = 4000
 # 单次 run 的模型调用轮数上限；0 = 由 max_tool_calls 推导（+2）。
 # 与 max_tool_calls（工具调用预算）独立，长运行时服务可以单独提高轮数。
 max_rounds = 0
+
+# 单次模型调用的输出上限（token）。0 = 由窗口推导：window/16，下限 4096、上限 65536。
+# 注意：思考模型的推理 token 也计入这个上限，写死一个偏小的值会让推理吃光额度、
+# 正文返回空（表现为"模型只产出推理没有答案"）。
+max_output_tokens = 0
 
 # 输出语言：PR review 正文/行内评论/help/status check 描述/主要日志/LLM 输出语言。
 # 支持 en / zh-CN / ru / fr / de / es（与 README 语言集一致）。

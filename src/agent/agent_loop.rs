@@ -25,8 +25,19 @@ use crate::agent::{
     ReviewRun, ToolCallRecord, ToolProfile, Usage,
 };
 
-/// Output limit per model call.
-const MAX_OUTPUT_TOKENS: u64 = 8192;
+/// Floor and ceiling for the per-call output budget.
+///
+/// Reasoning is billed against `max_tokens` on thinking models, so a cap that
+/// is fine for a plain answer can be exhausted by the reasoning alone: the
+/// model then returns a finish reason of "length" with empty content, which
+/// looks exactly like a model that refused to answer.
+const MIN_OUTPUT_TOKENS: u64 = 4096;
+const MAX_OUTPUT_TOKENS_CEILING: u64 = 65_536;
+
+/// Output budget for one call: a share of the window, floored and capped.
+pub fn output_budget(window: u64) -> u64 {
+    (window / 16).clamp(MIN_OUTPUT_TOKENS, MAX_OUTPUT_TOKENS_CEILING)
+}
 
 /// How many empty answers in a row are tolerated before the run fails.
 ///
@@ -74,6 +85,8 @@ pub struct AgentLoop {
     /// budget. A long-running review service raises it without raising the
     /// tool budget, so a run can take more turns without doing more work.
     max_rounds: u32,
+    /// Per-call output budget, including reasoning tokens (spec 01).
+    output_tokens: u64,
 }
 
 impl AgentLoop {
@@ -81,9 +94,18 @@ impl AgentLoop {
         Self {
             client,
             compaction,
+            output_tokens: output_budget(window),
             window,
             max_rounds: 0,
         }
+    }
+
+    /// Override the per-call output budget (0 keeps the window-derived one).
+    pub fn with_output_tokens(mut self, output_tokens: u64) -> Self {
+        if output_tokens > 0 {
+            self.output_tokens = output_tokens;
+        }
+        self
     }
 
     /// Bound the number of model calls in one run (0 = derive from the tool budget).
@@ -141,7 +163,7 @@ impl AgentLoop {
                 messages: items.to_vec(),
                 tools: specs.to_vec(),
                 temperature,
-                max_tokens: MAX_OUTPUT_TOKENS,
+                max_tokens: self.output_tokens,
             })
             .await
     }
@@ -720,6 +742,32 @@ mod tests {
             model: "test-model".to_string(),
             temperature: Some(0.0),
         }
+    }
+
+    #[test]
+    fn the_output_budget_scales_with_the_window_for_thinking_models() {
+        // Reasoning shares max_tokens, so a small fixed cap starves the answer.
+        // A 1M window yields ~62.5K, in the same league as the provider default.
+        assert_eq!(output_budget(1_000_000), 62_500);
+        assert_eq!(output_budget(131_072), 8_192);
+        assert_eq!(output_budget(1_000), MIN_OUTPUT_TOKENS);
+    }
+
+    #[tokio::test]
+    async fn every_call_carries_the_configured_output_budget() {
+        let client = ScriptedClient::new(vec![Box::new(|_call, _| Ok(reply("done")))]);
+        let loop_backend = AgentLoop::new(client.clone(), CompactionConfig::default(), 1_000_000)
+            .with_output_tokens(12_345);
+        loop_backend.review(request(None, 0)).await.unwrap();
+        assert_eq!(client.calls()[0].max_tokens, 12_345);
+        // 0 keeps the window-derived default.
+        let client = ScriptedClient::new(vec![Box::new(|_call, _| Ok(reply("done")))]);
+        AgentLoop::new(client.clone(), CompactionConfig::default(), 1_000_000)
+            .with_output_tokens(0)
+            .review(request(None, 0))
+            .await
+            .unwrap();
+        assert_eq!(client.calls()[0].max_tokens, 62_500);
     }
 
     fn loop_with(client: Arc<ScriptedClient>, window: u64) -> AgentLoop {

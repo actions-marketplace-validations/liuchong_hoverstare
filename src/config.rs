@@ -48,6 +48,8 @@ pub struct Config {
     pub compaction: crate::agent::compaction::CompactionConfig,
     /// Absolute bound on model calls in one run (0 = derive from the tool budget)
     pub max_rounds: u32,
+    /// Per-call output budget in tokens, reasoning included (0 = derive from the window)
+    pub max_output_tokens: u64,
     /// Output language (HOVERSTARE_LANGUAGE env > toml language > default en)
     pub language: crate::i18n::Lang,
     pub github_token: Option<SecretString>,
@@ -405,6 +407,14 @@ fn parse_ratio(raw: Option<String>) -> Option<anyhow::Result<f64>> {
     })
 }
 
+fn parse_u64(raw: Option<String>) -> Option<anyhow::Result<u64>> {
+    raw.map(|v| {
+        v.trim()
+            .parse::<u64>()
+            .with_context(|| format!("invalid integer: {v:?}"))
+    })
+}
+
 fn parse_u32(raw: Option<String>) -> Option<anyhow::Result<u32>> {
     raw.map(|v| {
         v.trim()
@@ -444,6 +454,7 @@ struct TomlConfig {
     context_tokens: Option<u64>,
     compaction: Option<bool>,
     max_rounds: Option<u32>,
+    max_output_tokens: Option<u64>,
     compaction_threshold_ratio: Option<f64>,
     compaction_keep_ratio: Option<f64>,
     summary_max_chars: Option<usize>,
@@ -563,6 +574,10 @@ impl Config {
         let max_rounds = parse_u32(env_or("HOVERSTARE_MAX_ROUNDS", None))
             .transpose()?
             .or(t.max_rounds)
+            .unwrap_or(0);
+        let max_output_tokens = parse_u64(env_or("HOVERSTARE_MAX_OUTPUT_TOKENS", None))
+            .transpose()?
+            .or(t.max_output_tokens)
             .unwrap_or(0);
 
         // Validation (spec 01)
@@ -698,6 +713,7 @@ impl Config {
             context_tokens,
             compaction,
             max_rounds,
+            max_output_tokens,
             language: crate::i18n::Lang::resolve(
                 std::env::var("HOVERSTARE_LANGUAGE").ok().as_deref(),
                 t.language.as_deref(),
@@ -843,6 +859,14 @@ mod tests {
         assert_eq!(c.max_rounds, 0);
         let c = merge_str("max_rounds = 40").unwrap();
         assert_eq!(c.max_rounds, 40);
+    }
+
+    #[test]
+    fn output_budget_defaults_to_the_window_and_can_be_pinned() {
+        let c = merge_str("").unwrap();
+        assert_eq!(c.max_output_tokens, 0, "0 means derive from the window");
+        let c = merge_str("max_output_tokens = 32768").unwrap();
+        assert_eq!(c.max_output_tokens, 32_768);
     }
 
     #[test]
