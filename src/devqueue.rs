@@ -513,17 +513,34 @@ pub fn instruction(comments: &[IssueComment], src: u64) -> Option<String> {
 /// never continue at all.
 pub fn state_after_round(progressed: bool, budget_exhausted: bool) -> ItemState {
     match (progressed, budget_exhausted) {
-        (false, _) => ItemState::Failed,
-        (true, true) => ItemState::Pending,
+        // The budget ran out: the task is unfinished whatever the round managed
+        // to commit, so the item stays queued and the next round resumes the
+        // same instruction (spec 11 §6).
+        (_, true) => ItemState::Pending,
         (true, false) => ItemState::Done,
+        (false, false) => ItemState::Failed,
     }
 }
 
 /// Whether a finished round pulls the next one (spec 11 §6): only progress that
 /// landed, only while the cap allows and only while work remains. A no-change
 /// round therefore stops in front of the human instead of looping.
-pub fn self_trigger(round: u32, max_rounds: u32, outcome: Outcome, queue: &QueueState) -> bool {
-    outcome == Outcome::Ok && round < max_rounds && !queue.ordered().is_empty()
+pub fn self_trigger(
+    round: u32,
+    max_rounds: u32,
+    outcome: Outcome,
+    budget_exhausted: bool,
+    queue: &QueueState,
+) -> bool {
+    unfinished(outcome, budget_exhausted, queue) && round < max_rounds
+}
+
+/// Whether work is still outstanding after a round (spec 11 §6): a round cut
+/// short by the budget always is (that is the whole point of continuing), and
+/// so is a round that landed progress while the queue has more to do. A
+/// no-change round that was *not* cut short has nothing left to continue with.
+pub fn unfinished(outcome: Outcome, budget_exhausted: bool, queue: &QueueState) -> bool {
+    budget_exhausted || (outcome == Outcome::Ok && !queue.ordered().is_empty())
 }
 
 /// The item currently in flight (`ItemState::Running`), if any.
@@ -854,7 +871,14 @@ mod tests {
             "a round cut short by the budget must stay queued so the chain resumes it"
         );
         assert_eq!(state_after_round(false, false), ItemState::Failed);
-        assert_eq!(state_after_round(false, true), ItemState::Failed);
+        // Exhausted with nothing committed is still unfinished: the next round
+        // gets a fresh budget instead of the work being dropped.
+        assert_eq!(state_after_round(false, true), ItemState::Pending);
+        let mut cut = QueueState::new();
+        cut.enqueue(9, ItemKind::Human, "读了一轮还没改").unwrap();
+        cut.set_state(9, state_after_round(false, true));
+        assert!(self_trigger(1, 10, Outcome::Nochange, true, &cut));
+        assert!(!self_trigger(10, 10, Outcome::Nochange, true, &cut));
         // The composition that makes the automatic chain reachable: one queued
         // instruction, a budget-cut round, and the item still open afterwards.
         let mut queue = QueueState::new();
@@ -862,12 +886,12 @@ mod tests {
         queue.set_state(7, ItemState::Running);
         queue.set_state(7, state_after_round(true, true));
         assert!(
-            self_trigger(1, 10, Outcome::Ok, &queue),
+            self_trigger(1, 10, Outcome::Ok, false, &queue),
             "the cut round must pull another one for the same instruction"
         );
         // A round that finished the task drains the queue and stops the chain.
         queue.set_state(7, state_after_round(true, false));
-        assert!(!self_trigger(1, 10, Outcome::Ok, &queue));
+        assert!(!self_trigger(1, 10, Outcome::Ok, false, &queue));
     }
 
     #[test]
@@ -875,22 +899,31 @@ mod tests {
         let mut queue = QueueState::new();
         queue.enqueue(11, ItemKind::Human, "task").unwrap();
         queue.set_state(11, ItemState::Done);
-        assert!(!self_trigger(1, 10, Outcome::Ok, &queue), "queue drained");
+        assert!(
+            !self_trigger(1, 10, Outcome::Ok, false, &queue),
+            "queue drained"
+        );
 
         queue.set_state(11, ItemState::Running);
         assert!(
-            self_trigger(1, 10, Outcome::Ok, &queue),
-            "budget cut the task short"
+            self_trigger(1, 10, Outcome::Ok, false, &queue),
+            "landed progress with work left"
         );
         assert!(
-            !self_trigger(1, 10, Outcome::Nochange, &queue),
-            "no progress: stop in front of the human"
+            !self_trigger(1, 10, Outcome::Nochange, false, &queue),
+            "no progress and not cut short: stop in front of the human"
         );
 
         queue.set_state(11, ItemState::Pending);
         queue.enqueue(12, ItemKind::Human, "task 2").unwrap();
-        assert!(self_trigger(1, 10, Outcome::Ok, &queue), "next task queued");
-        assert!(!self_trigger(10, 10, Outcome::Ok, &queue), "round cap");
+        assert!(
+            self_trigger(1, 10, Outcome::Ok, false, &queue),
+            "next task queued"
+        );
+        assert!(
+            !self_trigger(10, 10, Outcome::Ok, false, &queue),
+            "round cap"
+        );
     }
 
     #[test]

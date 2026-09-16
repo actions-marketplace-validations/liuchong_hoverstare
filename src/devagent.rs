@@ -527,14 +527,15 @@ enum RoundEnd {
     Stop,
 }
 
-fn round_end(round: u32, outcome: Outcome, queue: &QueueState) -> RoundEnd {
-    if self_trigger(round, MAX_PR_ROUNDS, outcome, queue) {
-        return RoundEnd::SelfTrigger;
+fn round_end(round: u32, outcome: Outcome, budget_exhausted: bool, queue: &QueueState) -> RoundEnd {
+    let unfinished = crate::devqueue::unfinished(outcome, budget_exhausted, queue);
+    if !unfinished {
+        return RoundEnd::Stop;
     }
-    if outcome == Outcome::Ok && round >= MAX_PR_ROUNDS && queue.open_count() > 0 {
+    if round >= MAX_PR_ROUNDS {
         return RoundEnd::FuseReached;
     }
-    RoundEnd::Stop
+    RoundEnd::SelfTrigger
 }
 
 /// One dev round on the PR branch: pick the queued task, sync to remote head,
@@ -784,7 +785,7 @@ async fn pr_dev_round(
     // An empty queue never self-triggers, so the chain ends when the queue drains.
     // The comment rides with this round's marker (first line stays the command),
     // so the next run knows which round it is claiming.
-    match round_end(round, outcome_st, &queue) {
+    match round_end(round, outcome_st, outcome.budget_exhausted, &queue) {
         RoundEnd::SelfTrigger => {
             gh.create_issue_comment(
                 repo,
@@ -1055,25 +1056,40 @@ mod tests {
     }
 
     #[test]
-    fn round_end_continues_only_with_landed_progress_and_work_left() {
+    fn round_end_continues_while_work_is_outstanding() {
         let mut queue = QueueState::new();
         queue.enqueue(30, ItemKind::Human, "剩下的活").unwrap();
         // Progress landed and work remains: pull the next round.
-        assert_eq!(round_end(1, Outcome::Ok, &queue), RoundEnd::SelfTrigger);
+        assert_eq!(
+            round_end(1, Outcome::Ok, false, &queue),
+            RoundEnd::SelfTrigger
+        );
         // A round that changed nothing stops in front of the human instead of
         // looping on the same queue (spec 11 §6 failure-stop).
-        assert_eq!(round_end(1, Outcome::Nochange, &queue), RoundEnd::Stop);
-        assert_eq!(round_end(1, Outcome::Failed, &queue), RoundEnd::Stop);
+        assert_eq!(
+            round_end(1, Outcome::Nochange, false, &queue),
+            RoundEnd::Stop
+        );
+        assert_eq!(round_end(1, Outcome::Failed, false, &queue), RoundEnd::Stop);
+        // Cut short by the budget, with or without a commit: continue.
+        assert_eq!(
+            round_end(1, Outcome::Nochange, true, &queue),
+            RoundEnd::SelfTrigger
+        );
+        assert_eq!(
+            round_end(1, Outcome::Ok, true, &queue),
+            RoundEnd::SelfTrigger
+        );
         // The cap stops the automatic chain and says so.
         assert_eq!(
-            round_end(MAX_PR_ROUNDS, Outcome::Ok, &queue),
+            round_end(MAX_PR_ROUNDS, Outcome::Ok, true, &queue),
             RoundEnd::FuseReached
         );
         // An empty queue never pulls another round, even at a low round number.
         let drained = QueueState::new();
-        assert_eq!(round_end(1, Outcome::Ok, &drained), RoundEnd::Stop);
+        assert_eq!(round_end(1, Outcome::Ok, false, &drained), RoundEnd::Stop);
         assert_eq!(
-            round_end(MAX_PR_ROUNDS, Outcome::Ok, &drained),
+            round_end(MAX_PR_ROUNDS, Outcome::Ok, false, &drained),
             RoundEnd::Stop
         );
     }
