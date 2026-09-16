@@ -231,7 +231,11 @@ jobs:
       # （`git log --format=%G?` = N）。需要 secret：HOVERSTARE_GPG_PRIVATE_KEY（armored
       # 私钥）与可选 HOVERSTARE_GPG_PASSPHRASE。导入后先做一次空提交自检，签不出来就红。
       - name: Configure commit signing
-        if: secrets.HOVERSTARE_GPG_PRIVATE_KEY != ''
+        # `secrets` is not available in a step `if`; pass it through env and test
+        # the env value instead (a secrets reference here makes the whole
+        # workflow invalid, and GitHub then fails every push with a run named
+        # after this file -- the dogfood went silently dead once already).
+        if: env.GPG_PRIVATE_KEY != ''
         shell: bash
         env:
           GPG_PRIVATE_KEY: ${{ secrets.HOVERSTARE_GPG_PRIVATE_KEY }}

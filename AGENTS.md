@@ -213,20 +213,23 @@ cargo fmt && cargo clippy --workspace --all-targets -- -D warnings
     `pull_request` check**（没有红也没有绿），round 会在没有 CI 的世界里盲开发。开发轮现在
     先 merge base、成功即推送；冲突则 abort 并回帖请人类解决（bot 不做 rebase）。这是
     `.agents/rules/07-dogfood-loop.md` 的第一个实战案例。
-25. **提交必须签名**：开发轮的提交要签名（`git log --format=%G?` 不能是 `N`）。CI 侧靠
+25. **改 workflow 必须过 actionlint**：`secrets` 之类上下文在步骤 `if` 里不可用，写错会让
+    GitHub 判定该工作流**无效**——之后每次 push 只得到一个以文件名命名的失败 run，而 dogfood
+    静默失效（踩过一次）。CI 里已有 `workflow-lint` 作业；本地改完先跑 `actionlint`。
+26. **提交必须签名**：开发轮的提交要签名（`git log --format=%G?` 不能是 `N`）。CI 侧靠
     `HOVERSTARE_GPG_PRIVATE_KEY`（+可选 `HOVERSTARE_GPG_PASSPHRASE`）导入密钥并置
     `commit.gpgsign=true`，导入后有空提交自检兜底；本地 `develop --task` 跟随本机 git 配置。
     GitHub 的 squash 合并提交由平台自己签（密钥 `B5690EEEBB952194`），不需要我们处理。
-26. **dogfood 可以钉版本自救**：master 上的**代码**坏掉时，dogfood 会连自己也跑不起来
+27. **dogfood 可以钉版本自救**：master 上的**代码**坏掉时，dogfood 会连自己也跑不起来
     （构建的就是坏代码）。自救入口有两个：`workflow_dispatch`（填 `version` + `pr`，维护者
     可指定任意 ref）或在 PR body / 评论里写 `hoverstare-pin: <ref>`（只接受 `master` 与
     release tag，防止外部 PR 指向自己控制的代码）。pin 只换二进制来源，工作区仍是被处理的
     代码；pin 构建在独立 worktree，冷编译约 3 分钟。注意 workflow 文件本身由 App 推不动，
     harness 改动只能由人提交。
-27. **bot 写的代码不过 fmt**：bot 不能执行代码，每轮都可能引入 rustfmt 偏差，
+28. **bot 写的代码不过 fmt**：bot 不能执行代码，每轮都可能引入 rustfmt 偏差，
     不要让它逐条手改 18 处格式——人跑 `cargo fmt` 提一个 style commit 才是
     设计内的协作方式（人类可通过 commit 调整分支）。
-28. **自驱动队列的接线与验收**：人类 `@hoverstare <指令>` 是一条任务入队，经历
+29. **自驱动队列的接线与验收**：人类 `@hoverstare <指令>` 是一条任务入队，经历
     Running → Done/Failed 收尾。一轮结束时，只有"落地成功 + 队列还有活 + 未到轮次
     上限"才自触发下一条（以 `@hoverstare continue` 评论启动），且**自触发只从队列取
     任务、不带自由指令**；队列空（或已排空）**绝不**自触发，链在无人处静默终止。
@@ -235,7 +238,7 @@ cargo fmt && cargo clippy --workspace --all-targets -- -D warnings
     把两条指令**分别**发成两条评论，观察一次只跑一条、每轮报告点名本轮执行的那一条、
     下一条以 `@hoverstare continue` 自触发带出——若一次跑两条或漏跑，先查并发组
     （§7 #10）与 claim/gate（`devqueue::precheck` / `plan_round`）。
-29. **队列运维：入队去重、失败即停、自触发取 pending**：人类在 PR 上的每条
+30. **队列运维：入队去重、失败即停、自触发取 pending**：人类在 PR 上的每条
     `@hoverstare <指令>` 都**入队**并按**来源评论 id 去重**（同一条评论重放不
     重复入队）；本轮执行的条目开局置 `running`、结束按结果置 `done` / `failed`，
     **失败即停、不自动重试**。**自触发轮的任务取队列的下一个 pending 项**（不是

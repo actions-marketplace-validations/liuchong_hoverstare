@@ -9,6 +9,17 @@ permissions:
   contents: read
 
 jobs:
+  # 工作流文件本身的语法错误会让 GitHub 直接判定该工作流无效：每次 push 只会得到一个以
+  # 文件名命名的失败 run，而 dogfood 静默失效。所以这里先 lint workflow。
+  workflow-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: actionlint
+        run: |
+          set -euo pipefail
+          docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint:latest -color
+
   check:
     runs-on: ubuntu-latest
     steps:
