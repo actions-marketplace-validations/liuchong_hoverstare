@@ -257,7 +257,7 @@ cargo fmt && cargo clippy --workspace --all-targets -- -D warnings
     `@hoverstare continue` 自触发带出。两个老坑会伪装成"队列没工作"：分支与 base
     冲突会**静默掐掉 CI**（开发轮已先合并 base，见 #24），以及 `.git/` 不给模型读
     （见 #16）——遇到"什么都没发生"先对照这两条。
-32. **流程级 pin 与提交身份约定**：两条 dogfood 欠账，代码已上线，文档见
+33. **流程级 pin 与提交身份约定**：两条 dogfood 欠账，代码已上线，文档见
     `specs/08-action-packaging.md` 的 dogfood/pin 小节。用途：**一条流程（issue → go → PR）
     从头到尾钉在同一个 revision 上**（`go` 时把当时的默认分支 revision 写成
     `<!-- hoverstare-pin: <sha> -->` 存进 PR body，后续每轮都构建它，同一版本还命中按 sha
