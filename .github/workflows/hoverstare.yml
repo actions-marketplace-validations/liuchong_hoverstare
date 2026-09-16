@@ -120,25 +120,46 @@ jobs:
             printf '%s' "$found"
           }
           ref="$DISPATCH_VERSION"
+          # Where the ref came from, so the round report can name it aloud: the
+          # PR body carries the flow-level pin (written by `go`), a comment or a
+          # review body carries an instruction marker, and a manual run carries
+          # its `version` input. Only these four literals are ever written.
+          source_kind="dispatch"
           # Recent comments newest-first, then the event's own bodies. The last
           # marker inside each text wins, so the newest instruction is the one
-          # meant.
+          # meant. `scan` also records which text produced the ref.
+          scan() {
+            local kind="$1" text="$2" found
+            found=$(extract "$text")
+            if [ -n "$found" ]; then
+              ref="$found"
+              source_kind="$kind"
+              return 0
+            fi
+            return 1
+          }
           if [ -z "$ref" ] && [ -n "$NUMBER" ]; then
             bodies=$(gh api "repos/$GITHUB_REPOSITORY/issues/$NUMBER/comments?per_page=30" \
               --jq '.[].body' 2>/dev/null | tac || true)
             for text in "$COMMENTS" "$bodies"; do
-              found=$(extract "$text")
-              if [ -n "$found" ]; then ref="$found"; break; fi
+              if scan marker "$text"; then break; fi
             done
           fi
           if [ -z "$ref" ]; then
-            for text in "$COMMENTS" "$REVIEW_BODY" "$PR_BODY" "$ISSUE_BODY"; do
-              found=$(extract "$text")
-              if [ -n "$found" ]; then ref="$found"; break; fi
+            for pair in "marker|$COMMENTS" "marker|$REVIEW_BODY" "flow-pin|$PR_BODY" "marker|$ISSUE_BODY"; do
+              if scan "${pair%%|*}" "${pair#*|}"; then break; fi
             done
           fi
-          echo "pin scan: dispatch=[$DISPATCH_VERSION] comments_len=${#COMMENTS} resolved=[$ref]"
+          echo "pin scan: dispatch=[$DISPATCH_VERSION] comments_len=${#COMMENTS} resolved=[$ref] source=[$source_kind]"
           if [ -z "$ref" ]; then
+            # No ref: the binary is the event's revision. A manual run whose
+            # `version` input is empty is still "dispatch"; everything else is
+            # the event's own version.
+            if [ "$MODE" = "dispatch" ]; then
+              echo "source=dispatch" >> "$GITHUB_OUTPUT"
+            else
+              echo "source=event" >> "$GITHUB_OUTPUT"
+            fi
             echo "mode=event" >> "$GITHUB_OUTPUT"
             echo "using the event's own revision"
             exit 0
@@ -176,6 +197,7 @@ jobs:
           echo "mode=pinned" >> "$GITHUB_OUTPUT"
           echo "commit=$commit" >> "$GITHUB_OUTPUT"
           echo "ref=$ref" >> "$GITHUB_OUTPUT"
+          echo "source=$source_kind" >> "$GITHUB_OUTPUT"
           echo "::notice::building hoverstare from pinned ref $ref ($commit)"
 
       - name: Add pinned source worktree
@@ -284,6 +306,11 @@ jobs:
           HOVERSTARE_THINKING: ${{ vars.HOVERSTARE_THINKING }}
           HOVERSTARE_REASONING_EFFORT: ${{ vars.HOVERSTARE_REASONING_EFFORT }}
           HOVERSTARE_CONTEXT_TOKENS: ${{ vars.HOVERSTARE_CONTEXT_TOKENS }}
+          # Build provenance (spec 11 §6): the round report names the revision
+          # the binary was built from. Pinned builds export `commit`; event and
+          # manual builds fall back to the event's own revision.
+          HOVERSTARE_BUILD_MODE: ${{ steps.source.outputs.source }}
+          HOVERSTARE_BUILT_FROM: ${{ steps.source.outputs.commit || github.sha }}
         run: |
           set -euo pipefail
           bin="${{ steps.binary.outputs.path }}"

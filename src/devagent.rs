@@ -732,11 +732,17 @@ async fn pr_dev_round(
     } else {
         summary_line(&queue, &comments)
     };
+    // Build provenance (spec 11 §6): the workflow says which revision the
+    // running binary came from, and the report repeats it aloud so a human can
+    // verify the flow-level pin without opening the run log. Absent locally.
+    let source_line = build_source_from_env()
+        .map(|line| format!("\n\n{line}"))
+        .unwrap_or_default();
     gh.create_issue_comment(
         repo,
         ev.number,
         &format!(
-            "{head}\n\n{}\n\n{queue_note}\n\n{}\n\n{}",
+            "{head}\n\n{}\n\n{queue_note}{source_line}\n\n{}\n\n{}",
             crate::sanitize::model_text(&outcome.summary),
             marker_text(&marker),
             queue.render()
@@ -961,6 +967,44 @@ fn commit_identity_for(cfg: &Config, trigger: &str) -> crate::git::CommitAuthor 
     )
 }
 
+/// Human wording for a build source the workflow can report (spec 11 §6).
+fn build_source_word(mode: &str) -> Option<&'static str> {
+    match mode {
+        "flow-pin" => Some("流程 pin"),
+        "marker" => Some("指令标记"),
+        "event" => Some("事件版本"),
+        "dispatch" => Some("手动触发"),
+        _ => None,
+    }
+}
+
+/// One line for the round report naming which revision the running binary was
+/// built from (spec 11 §6). An unknown mode or a missing sha yields `None`, so
+/// nothing untrusted reaches the comment; the line is absent entirely when the
+/// workflow exported no provenance (local `develop --task`, older workflows).
+fn build_source_line(mode: Option<&str>, sha: Option<&str>) -> Option<String> {
+    let word = build_source_word(mode?)?;
+    let short: String = sha?.trim().chars().take(8).collect();
+    if short.is_empty() {
+        return None;
+    }
+    Some(format!("本轮构建自 {short}（来源：{word}）"))
+}
+
+/// Build provenance as exported by the workflow (spec 11 §6).
+fn build_source_from_env() -> Option<String> {
+    build_source_from(|key| std::env::var(key).ok())
+}
+
+/// Same as [`build_source_from_env`], reading through a getter so tests can
+/// drive it without touching the process environment.
+fn build_source_from(get: impl Fn(&str) -> Option<String>) -> Option<String> {
+    build_source_line(
+        get("HOVERSTARE_BUILD_MODE").as_deref(),
+        get("HOVERSTARE_BUILT_FROM").as_deref(),
+    )
+}
+
 fn token_remote(token: &str, full_name: &str) -> String {
     format!("https://x-access-token:{token}@github.com/{full_name}.git")
 }
@@ -978,6 +1022,41 @@ mod tests {
                 login: "alice".into(),
             },
         }
+    }
+
+    #[test]
+    fn build_source_line_names_mode_and_short_sha() {
+        let sha = "4d407d3712345678901234567890abcdefabcdef";
+        let line = build_source_line(Some("flow-pin"), Some(sha)).expect("rendered");
+        assert!(line.starts_with("本轮构建自 4d407d37"), "{line}");
+        assert!(line.contains("流程 pin"), "{line}");
+        // Only the short sha appears, never the whole one.
+        assert!(!line.contains(sha), "{line}");
+        // Every source word the workflow can emit renders in plain language.
+        for (mode, word) in [
+            ("flow-pin", "流程 pin"),
+            ("marker", "指令标记"),
+            ("event", "事件版本"),
+            ("dispatch", "手动触发"),
+        ] {
+            let rendered = build_source_line(Some(mode), Some(sha)).unwrap();
+            assert!(rendered.contains(word), "{mode} -> {rendered}");
+        }
+        // Unknown mode or missing provenance renders nothing, so an old workflow
+        // and a local run leave the report unchanged.
+        assert_eq!(build_source_line(Some("nope"), Some(sha)), None);
+        assert_eq!(build_source_line(None, Some(sha)), None);
+        assert_eq!(build_source_line(Some("flow-pin"), None), None);
+        assert_eq!(build_source_line(Some("event"), Some("   ")), None);
+        // The env-reading path agrees.
+        let get = |key: &str| match key {
+            "HOVERSTARE_BUILD_MODE" => Some("marker".to_string()),
+            "HOVERSTARE_BUILT_FROM" => Some(sha.to_string()),
+            _ => None,
+        };
+        let line = build_source_from(get).expect("rendered");
+        assert!(line.contains("指令标记"), "{line}");
+        assert_eq!(build_source_from(|_| None), None);
     }
 
     #[test]

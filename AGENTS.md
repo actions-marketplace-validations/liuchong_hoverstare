@@ -260,7 +260,9 @@ cargo fmt && cargo clippy --workspace --all-targets -- -D warnings
     所以自触发轮与本地 `--task` 也按覆盖署名；`bot` 仍是纯 bot 身份，覆盖不生效）。
     **PR 上肉眼验收**：`gh pr view <n> --json body` 看 PR body 里的 pin 标记，run 日志看
     `building hoverstare from pinned ref …`（同段还有 `pin scan: …`，实现见
-    `.github/workflows/hoverstare.yml`）；`git log --format='%an <%ae>%n%b'` 看作者与
+    `.github/workflows/hoverstare.yml`）；**pin 是否生效不用翻 Actions 日志，直接看轮次报告
+    评论里的来源行**（`本轮构建自 <短 sha>（来源：流程 pin）`），短 sha 与 PR body 标记一致
+    即本轮确实构建于该版本；`git log --format='%an <%ae>%n%b'` 看作者与
     `Co-authored-by: hoverstare[bot]` 尾注。
 
 ## 7.5 Dogfood 验证手册（开发模式端到端怎么测）
