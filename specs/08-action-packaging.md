@@ -122,8 +122,19 @@ inputs：
     维护者可用任意 ref（这是 master 坏掉时的自救入口）；
   - 自动触发：写 `hoverstare-pin: <ref>` 即生效。读取顺序 = 触发评论 → **该 PR/issue 的最近 30 条评论（新→旧）**
     → PR/issue body。评论是可编辑的，所以不只读触发的那一条：改过的、较早写下的标记同样生效。
-    **这里只接受 `master` 或 release tag（`vX.Y.Z`）**——任何能开 PR 的人都能写这个标记，
-    而 workflow 持有写权限，不能允许它指着一份别人控制的代码去构建运行。
+    **这里只接受 `master`、release tag（`vX.Y.Z`），或可从默认分支到达的 commit**——任何能开 PR
+    的人都能写这个标记，而 workflow 持有写权限，不能允许它指着一份别人控制的代码去构建运行。
+    **分支名一律拒绝**：先过 `^[0-9a-f]{7,40}$`，再过 `merge-base --is-ancestor` 校验
+    （必须从默认分支可达）——分支本身正是别人可控的指向。
+  - **流程级 pin（issue → go → PR）**：流程开始时，harness 会把当时的默认分支 revision 以隐藏标记
+    `<!-- hoverstare-pin: <sha> -->` 写进 PR body；该流程后续每一轮都构建这个 revision（同一版本
+    还让 pin 构建命中按 sha 的缓存 `pin-<commit>`，不再逐轮冷编译）。人工覆盖仍可用
+    `hoverstare-pin: master` 或 `workflow_dispatch` 的 `version`。
+  - **提交身份**：`commit_identity = "coauthor"`（默认）时作者 = 触发者，提交信息带
+    `Co-authored-by: hoverstare[bot]` 尾注；`commit_author = "Name <email>"` 可覆盖作者，且
+    **覆盖优先于"谁触发的"**，因此自触发轮与本地 `develop --task` 也按覆盖署名
+    （本仓库配置为 `刘冲 <mail@liuchong.dev>`）。`commit_identity = "bot"` 仍表示纯 bot
+    身份，覆盖不生效。
   - pin 只改变**二进制的来源**：工作区仍是被处理的那份代码，`show_base_file`、工具沙箱、
     push 目标都不受影响；pin 构建在独立 worktree 里进行，并按 **pin 的 commit** 单独缓存，
     因此一个流程只有第一轮付冷编译（约 3 分钟），后续轮命中缓存。

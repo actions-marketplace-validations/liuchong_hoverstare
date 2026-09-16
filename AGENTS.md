@@ -247,6 +247,17 @@ cargo fmt && cargo clippy --workspace --all-targets -- -D warnings
     `@hoverstare continue` 自触发带出。两个老坑会伪装成"队列没工作"：分支与 base
     冲突会**静默掐掉 CI**（开发轮已先合并 base，见 #24），以及 `.git/` 不给模型读
     （见 #16）——遇到"什么都没发生"先对照这两条。
+29. **流程级 pin 与提交身份约定**：两条 dogfood 欠账，代码已上线，文档见
+    `specs/08-action-packaging.md` 的 dogfood/pin 小节。用途：**一条流程（issue → go → PR）
+    从头到尾钉在同一个 revision 上**（`go` 时把当时的默认分支 revision 写成
+    `<!-- hoverstare-pin: <sha> -->` 存进 PR body，后续每轮都构建它，同一版本还命中按 sha
+    的缓存 `pin-<commit>`），以及**提交归到人头上、bot 只做 co-author**
+    （`commit_identity = "coauthor"` 是默认，`commit_author` 覆盖**优先于"谁触发的"**，
+    所以自触发轮与本地 `--task` 也按覆盖署名；`bot` 仍是纯 bot 身份，覆盖不生效）。
+    **PR 上肉眼验收**：`gh pr view <n> --json body` 看 PR body 里的 pin 标记，run 日志看
+    `building hoverstare from pinned ref …`（同段还有 `pin scan: …`，实现见
+    `.github/workflows/hoverstare.yml`）；`git log --format='%an <%ae>%n%b'` 看作者与
+    `Co-authored-by: hoverstare[bot]` 尾注。
 
 ## 7.5 Dogfood 验证手册（开发模式端到端怎么测）
 
