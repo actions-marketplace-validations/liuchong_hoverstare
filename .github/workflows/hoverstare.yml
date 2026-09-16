@@ -100,27 +100,31 @@ jobs:
           NUMBER: ${{ github.event.issue.number || github.event.pull_request.number || inputs.pr }}
         run: |
           set -euo pipefail
+          # Pure bash extraction: grep/sed behaviour depends on the runner's
+          # locale and on how it treats multi-byte input, and a marker that
+          # silently fails to match is worse than no marker at all. The LAST
+          # marker in the text wins, because the newest instruction is the one
+          # meant.
           extract() {
-            printf '%s' "$1" \
-              | grep -oiE 'hoverstare-pin:[[:space:]]*[A-Za-z0-9._/-]+' \
-              | head -1 | sed -E 's/.*:[[:space:]]*//' || true
-          }
-          ref="$DISPATCH_VERSION"
-          # 最近评论优先（含触发评论本身），新→旧取第一条带标记的。
-          if [ -z "$ref" ] && [ -n "$NUMBER" ]; then
-            bodies=$(gh api "repos/$GITHUB_REPOSITORY/issues/$NUMBER/comments?per_page=30" \
-              --jq '.[].body' 2>/dev/null | tac || true)
-            for text in "$COMMENTS" "$bodies"; do
-              found=$(extract "$text")
-              if [ -n "$found" ]; then ref="$found"; break; fi
+            local rest lower candidate found
+            lower=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
+            rest="$lower"
+            found=""
+            while [[ "$rest" == *hoverstare-pin:* ]]; do
+              rest="${rest#*hoverstare-pin:}"
+              candidate="${rest#"${rest%%[![:space:]]*}"}"
+              candidate="${candidate%%[^a-z0-9._/-]*}"
+              if [ -n "$candidate" ]; then found="$candidate"; fi
             done
-          fi
+            printf '%s' "$found"
+          }
           if [ -z "$ref" ]; then
             for text in "$COMMENTS" "$REVIEW_BODY" "$PR_BODY" "$ISSUE_BODY"; do
               found=$(extract "$text")
               if [ -n "$found" ]; then ref="$found"; break; fi
             done
           fi
+          echo "pin scan: dispatch=[$DISPATCH_VERSION] comments_len=${#COMMENTS} resolved=[$ref]"
           if [ -z "$ref" ]; then
             echo "mode=event" >> "$GITHUB_OUTPUT"
             echo "using the event's own revision"

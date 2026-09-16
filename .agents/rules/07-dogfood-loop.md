@@ -37,6 +37,18 @@
    让下一个人能复现；
 4. 修完**回到原任务继续推进**，并在下一轮报告里说明"这一轮暴露/修掉了什么"。
 
+## 3.5 已归档的实战案例
+
+- **冲突静默掐掉 CI**：分支落后于 base → PR 冲突 → GitHub 不跑任何 `pull_request` check。
+  修复：开发轮先 merge base（harness 侧），冲突则 abort 并回帖请人解决（`AGENTS.md §7`）。
+- **合并提交缺身份**：本地能过、CI 挂（runner 没有全局 git 配置）。修复：merge 自带身份；
+  验证方式是把全局 git 配置清空跑全套（`GIT_CONFIG_GLOBAL=/dev/null`）。
+- **解析依赖外部工具与环境**：版本 pin 的标记用 `grep -i` 解析，在 runner 上没匹配到（本地同样
+  输入能匹配）。修复：改成纯 bash 解析并自报结果（`pin scan: … resolved=[…]`），同时"取最后一个
+  标记"。教训：**harness 的解析不要依赖 grep/sed 的 locale 行为**。
+- **命令解析吞掉指令**：`strip_code_blocks` 靠反引号配对翻转，落单反引号会吞掉其后全文；
+  且取"第一个"提及而非最后一个。已作为任务交给 dogfood 修（含单测）。
+
 ## 4. 与"人的机械活"的界线
 
 - **设计内分工**（不要当成缺陷）：`cargo fmt`、解决 master 与分支的冲突、清理 bot 留下的
