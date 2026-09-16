@@ -599,15 +599,14 @@ impl AgentLoop {
                     Err(e) => warn!("could not remove compaction dump {}: {e}", path.display()),
                 }
             }
-            match usage.cache_hit_ratio() {
-                Some(ratio) => info!(
+            if let Some(ratio) = usage.cache_hit_ratio() {
+                info!(
                     "run used {} input token(s) ({} cached, {:.0}%), {} output",
                     usage.input_tokens,
                     usage.cached_input_tokens,
                     ratio * 100.0,
                     usage.output_tokens
-                ),
-                None => {}
+                );
             }
             outcome.map(|(raw_output, tool_trace, usage)| ReviewRun {
                 raw_output,
