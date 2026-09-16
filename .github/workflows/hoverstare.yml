@@ -196,13 +196,13 @@ jobs:
           case "$ref" in
             master)
               git fetch --no-tags --quiet "origin" \
-                "${DEFAULT_BRANCH}:refs/remotes/origin/${DEFAULT_BRANCH}" || true
+                "${DEFAULT_BRANCH}:refs/remotes/origin/${DEFAULT_BRANCH}" 2>/dev/null || true
               ;;
             v[0-9]*)
-              git fetch --no-tags --quiet origin "refs/tags/${ref}:refs/tags/${ref}" || true
+              git fetch --no-tags --quiet origin "refs/tags/${ref}:refs/tags/${ref}" 2>/dev/null || true
               ;;
             *)
-              git fetch --no-tags --quiet origin "$ref" || true
+              git fetch --no-tags --quiet origin "$ref" 2>/dev/null || true
               ;;
           esac
           commit=$(git rev-parse --verify --quiet "${ref}^{commit}" \
