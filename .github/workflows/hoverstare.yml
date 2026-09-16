@@ -98,6 +98,7 @@ jobs:
           COMMENTS: ${{ github.event.comment.body }}
           REVIEW_BODY: ${{ github.event.review.body }}
           NUMBER: ${{ github.event.issue.number || github.event.pull_request.number || inputs.pr }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           set -euo pipefail
           # Pure bash extraction: grep/sed behaviour depends on the runner's
@@ -148,11 +149,23 @@ jobs:
           fi
           # 只有维护者能创建的 ref 才被接受：任何能开 PR 的人都能往 PR body 里写标记，
           # 而 workflow 手上有写权限，不能让人指着一份自己控制的代码去构建运行。
+          # A marker may name master, a release tag, or a commit that is already
+          # reachable from the default branch. A branch is never accepted: anyone
+          # who can open a pull request can write the marker, and the workflow
+          # holds write permissions. A reachable commit is maintainer-controlled
+          # and is what a flow records to keep its own rounds on one revision.
           if [ "$MODE" != "dispatch" ] \
              && [ "$ref" != "master" ] \
              && ! printf '%s' "$ref" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
-            echo "::error::hoverstare-pin from a PR or comment may only name master or a release tag (vX.Y.Z); got: $ref"
-            exit 1
+            if ! printf '%s' "$ref" | grep -qE '^[0-9a-f]{7,40}$'; then
+              echo "::error::hoverstare-pin from a PR or comment may only name master, a release tag, or a commit; got: $ref"
+              exit 1
+            fi
+            git fetch --quiet origin "${DEFAULT_BRANCH}:refs/remotes/origin/${DEFAULT_BRANCH}" || true
+            if ! git merge-base --is-ancestor "$(git rev-parse --verify --quiet "${ref}^{commit}")" "refs/remotes/origin/${DEFAULT_BRANCH}" 2>/dev/null; then
+              echo "::error::hoverstare-pin commit is not reachable from ${DEFAULT_BRANCH}; refusing to build it: $ref"
+              exit 1
+            fi
           fi
           git fetch --no-tags --quiet origin "$ref" || true
           commit=$(git rev-parse --verify --quiet "${ref}^{commit}" || true)
@@ -176,6 +189,14 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
+
+      # The pinned worktree gets its own cache, keyed by the pinned revision:
+      # every round of one flow then rebuilds nothing.
+      - uses: Swatinem/rust-cache@v2
+        if: steps.source.outputs.mode == 'pinned'
+        with:
+          workspaces: ${{ runner.temp }}/hoverstare-src -> target
+          key: pin-${{ steps.source.outputs.commit }}
 
       - name: Build (event revision)
         if: steps.source.outputs.mode != 'pinned'

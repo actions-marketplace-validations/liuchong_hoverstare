@@ -349,6 +349,10 @@ async fn implement_issue(
     let thread = render_thread(&title, issue.body.as_deref().unwrap_or(""), comments);
 
     let git = GitRepo::open(&cfg.workspace)?;
+    // Revision this flow starts from. Recorded in the pull request body so every
+    // later round of the same flow builds the same source instead of whatever
+    // master happens to be, which also lets the pinned build reuse its cache.
+    let flow_revision = git.run(&["rev-parse", "HEAD"]).await?;
     let token = dev_token(cfg);
     git.set_remote(
         "devpush",
@@ -412,8 +416,11 @@ async fn implement_issue(
     // pull request body, where humans read it and later rounds inherit it.
     let summary = crate::sanitize::model_text(&outcome.summary);
     let pr_body = format!(
-        "{}\n\nCloses #{}\n\n---\n由 HoverStare 实现。后续调整请在 PR 评论区 `@hoverstare` 下达。",
-        summary, ev.number
+        "{}\n\nCloses #{}\n\n---\n由 HoverStare 实现。后续调整请在 PR 评论区 `@hoverstare` 下达。\n\n\
+         <!-- hoverstare-pin: {} -->",
+        summary,
+        ev.number,
+        flow_revision.trim()
     );
     let pr = gh
         .create_pull_request(

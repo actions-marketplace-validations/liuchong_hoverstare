@@ -9,3 +9,8 @@ reasoning_effort = "medium"
 context_tokens = 1000000
 # 思考模式下 temperature 不生效，干脆不发该字段
 set_temperature = false
+
+# 提交身份：作者是本人，hoverstare 作为 co-author（提交信息带 Co-authored-by 尾注）。
+# 名字/邮箱按本仓库既有提交（刘冲 <mail@liuchong.dev>）保持一致。
+commit_identity = "coauthor"
+commit_author = "刘冲 <mail@liuchong.dev>"

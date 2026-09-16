@@ -101,15 +101,31 @@ pub fn resolve_commit_identity(
     trigger: Option<&str>,
     override_: Option<&str>,
 ) -> CommitAuthor {
+    // `bot` means "the bot's own identity", so it wins over any override.
+    if mode == CommitIdentity::Bot {
+        return CommitAuthor::bot();
+    }
+    // An explicit author override says whose commits these are, not who
+    // happened to trigger the round: it applies to local runs (no trigger) and
+    // to self-triggered rounds (the bot as trigger) alike. Without this, a
+    // repository that configured its own identity would still get bot-authored
+    // commits on every automatic round.
+    if let Some(author) = override_.and_then(parse_identity) {
+        let trailer = (mode == CommitIdentity::Coauthor)
+            .then(|| format!("Co-authored-by: {BOT_NAME} <{BOT_EMAIL}>"));
+        return CommitAuthor {
+            author,
+            committer: bot_identity(),
+            trailer,
+        };
+    }
     let Some(trigger) = trigger.map(str::trim).filter(|t| !t.is_empty()) else {
         return CommitAuthor::bot();
     };
-    if mode == CommitIdentity::Bot || trigger == BOT_NAME {
+    if trigger == BOT_NAME {
         return CommitAuthor::bot();
     }
-    let author = override_
-        .and_then(parse_identity)
-        .unwrap_or_else(|| trigger_identity(trigger));
+    let author = trigger_identity(trigger);
     let trailer = (mode == CommitIdentity::Coauthor)
         .then(|| format!("Co-authored-by: {BOT_NAME} <{BOT_EMAIL}>"));
     CommitAuthor {
@@ -423,6 +439,31 @@ mod tests {
         assert!(!repo.has_changes().await.unwrap());
         let log = repo.run(&["log", "--format=%an %s", "-1"]).await.unwrap();
         assert_eq!(log, "hoverstare[bot] feat: add b");
+    }
+
+    #[test]
+    fn an_explicit_author_override_outlives_the_trigger() {
+        let override_ = Some("刘冲 <mail@liuchong.dev>");
+        // No trigger at all (local runs).
+        let local = resolve_commit_identity(CommitIdentity::Coauthor, None, override_);
+        assert_eq!(local.author.name, "刘冲");
+        assert_eq!(local.author.email, "mail@liuchong.dev");
+        assert!(local.trailer.is_some(), "coauthor keeps the trailer");
+        // A self-triggered round: the bot is the trigger, the override still wins.
+        let self_triggered =
+            resolve_commit_identity(CommitIdentity::Coauthor, Some(BOT_NAME), override_);
+        assert_eq!(self_triggered.author.name, "刘冲");
+        assert!(self_triggered.trailer.is_some());
+        // `author` mode has no trailer; `bot` mode ignores the override.
+        let plain = resolve_commit_identity(CommitIdentity::Author, None, override_);
+        assert_eq!(plain.author.name, "刘冲");
+        assert!(plain.trailer.is_none());
+        let bot = resolve_commit_identity(CommitIdentity::Bot, Some("alice"), override_);
+        assert_eq!(bot.author.name, BOT_NAME);
+        assert!(bot.trailer.is_none());
+        // Without an override, the trigger decides as before.
+        let triggered = resolve_commit_identity(CommitIdentity::Coauthor, Some("alice"), None);
+        assert_eq!(triggered.author.email, "alice@users.noreply.github.com");
     }
 
     #[tokio::test]
