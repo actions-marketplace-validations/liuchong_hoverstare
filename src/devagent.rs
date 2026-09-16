@@ -339,6 +339,7 @@ async fn implement_issue(
         model: &cfg.model,
         temperature: cfg.temp(0.0),
         budget_calls: cfg.max_tool_calls.max(develop::DEFAULT_BUDGET_CALLS),
+        commit_identity: commit_identity_for(cfg, &ev.author),
     })
     .await?;
     if outcome.commit.is_none() {
@@ -487,8 +488,7 @@ async fn pr_dev_round(
     match git
         .merge_ref(
             &format!("refs/remotes/devpush/{base}"),
-            crate::develop::AUTHOR_NAME,
-            crate::develop::AUTHOR_EMAIL,
+            &commit_identity_for(cfg, &ev.author),
         )
         .await
     {
@@ -530,6 +530,7 @@ async fn pr_dev_round(
         model: &cfg.model,
         temperature: cfg.temp(0.0),
         budget_calls: cfg.max_tool_calls.max(develop::DEFAULT_BUDGET_CALLS),
+        commit_identity: commit_identity_for(cfg, &ev.author),
     })
     .await?;
     let mut pushed = false;
@@ -590,7 +591,6 @@ async fn merge_flow(
     ev: &DevEvent,
     pr: &PullRequest,
 ) -> anyhow::Result<String> {
-    let _ = cfg;
     if pr.state.as_deref() != Some("open") {
         gh.create_issue_comment(repo, ev.number, "PR 未处于打开状态，无法合并。")
             .await?;
@@ -632,7 +632,14 @@ async fn merge_flow(
     // (merge requires contents: write; the App token has read until upgraded).
     // Comments still go through the identity client (App token).
     let write_gh = GitHubClient::new(Some(dev_token(cfg)))?;
-    let sha = write_gh.merge_pull_request(repo, ev.number).await?;
+    // The squash commit carries the same identity contract (spec 11 §3.3): in
+    // coauthor mode credit hoverstare[bot] with a trailer; bot/author leave the
+    // default message untouched. (GitHub sets the squash author from the token,
+    // which is the push/merge identity, not the commit author.)
+    let identity = commit_identity_for(cfg, &ev.author);
+    let sha = write_gh
+        .merge_pull_request(repo, ev.number, identity.trailer.as_deref())
+        .await?;
     // Delete the merged source branch (spec 11 §6); failure only warns.
     let branch_note = match write_gh.delete_branch(repo, &pr.head.ref_name).await {
         Ok(()) => format!("，源分支 `{}` 已删除", pr.head.ref_name),
@@ -690,6 +697,16 @@ fn dev_token(cfg: &Config) -> secrecy::SecretString {
         return pat.clone();
     }
     cfg.github_token.clone().unwrap_or_default()
+}
+
+/// Commit identity for one develop round (spec 11 §3.3): the trigger's login
+/// with the configured mode. A missing trigger degrades to the bot identity.
+fn commit_identity_for(cfg: &Config, trigger: &str) -> crate::git::CommitAuthor {
+    crate::git::resolve_commit_identity(
+        cfg.commit_identity,
+        Some(trigger),
+        cfg.commit_author.as_deref(),
+    )
 }
 
 fn token_remote(token: &str, full_name: &str) -> String {

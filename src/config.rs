@@ -52,6 +52,10 @@ pub struct Config {
     pub max_output_tokens: u64,
     /// Output language (HOVERSTARE_LANGUAGE env > toml language > default en)
     pub language: crate::i18n::Lang,
+    /// Develop-mode commit identity (spec 11 §3.3)
+    pub commit_identity: CommitIdentity,
+    /// Explicit `Name <email>` override for the trigger's identity (spec 11 §3.3)
+    pub commit_author: Option<String>,
     pub github_token: Option<SecretString>,
     /// Classic PAT with a **narrow duty** (spec 07/11): resolveReviewThread
     /// fallback and dev-mode git push. Never used as the API identity —
@@ -119,6 +123,19 @@ impl From<SeverityToml> for Severity {
             SeverityToml::Critical => Severity::Critical,
         }
     }
+}
+
+/// Develop-mode commit identity (spec 11 §3.3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CommitIdentity {
+    /// Author = the trigger (the human who gave the instruction)
+    Author,
+    /// Author = hoverstare[bot] (the historical behaviour)
+    Bot,
+    /// Author = the trigger, plus a `Co-authored-by: hoverstare[bot]` trailer
+    #[default]
+    Coauthor,
 }
 
 #[derive(Debug, Clone)]
@@ -431,6 +448,18 @@ fn parse_usize(raw: Option<String>) -> Option<anyhow::Result<usize>> {
     })
 }
 
+fn parse_commit_identity(raw: Option<String>) -> anyhow::Result<CommitIdentity> {
+    match raw {
+        None => Ok(CommitIdentity::default()),
+        Some(v) => match v.trim().to_ascii_lowercase().as_str() {
+            "author" => Ok(CommitIdentity::Author),
+            "bot" => Ok(CommitIdentity::Bot),
+            "coauthor" => Ok(CommitIdentity::Coauthor),
+            other => bail!("invalid commit_identity: {other:?} (expected author|bot|coauthor)"),
+        },
+    }
+}
+
 /// File structure of `.github/hoverstare.toml` (all optional)
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -459,6 +488,8 @@ struct TomlConfig {
     compaction_keep_ratio: Option<f64>,
     summary_max_chars: Option<usize>,
     language: Option<String>,
+    commit_identity: Option<String>,
+    commit_author: Option<String>,
     permissions: Option<Permissions>,
 }
 
@@ -579,6 +610,16 @@ impl Config {
             .transpose()?
             .or(t.max_output_tokens)
             .unwrap_or(0);
+
+        // Develop commit identity (spec 11 §3.3): env > toml > default coauthor.
+        let commit_identity =
+            parse_commit_identity(env_or("HOVERSTARE_COMMIT_IDENTITY", t.commit_identity))?;
+        let commit_author = env_or("HOVERSTARE_COMMIT_AUTHOR", t.commit_author);
+        if let Some(spec) = &commit_author
+            && crate::git::parse_identity(spec).is_none()
+        {
+            bail!("invalid commit_author: {spec:?} (expected \"Name <email>\")");
+        }
 
         // Validation (spec 01)
         if model.trim().is_empty() {
@@ -718,6 +759,8 @@ impl Config {
                 std::env::var("HOVERSTARE_LANGUAGE").ok().as_deref(),
                 t.language.as_deref(),
             ),
+            commit_identity,
+            commit_author,
             github_token,
             gh_pat,
             llm,
@@ -795,6 +838,34 @@ mod tests {
     #[test]
     fn unknown_fields_rejected() {
         assert!(merge_str("unknown_key = 1").is_err());
+    }
+
+    #[test]
+    fn commit_identity_config() {
+        // Default is coauthor; no explicit author.
+        let c = merge_str("").unwrap();
+        assert_eq!(c.commit_identity, CommitIdentity::Coauthor);
+        assert!(c.commit_author.is_none());
+        // toml value / override are honoured.
+        let c = merge_str(r#"commit_identity = "bot""#).unwrap();
+        assert_eq!(c.commit_identity, CommitIdentity::Bot);
+        let c = merge_str(r#"commit_author = "Alice <alice@example.com>""#).unwrap();
+        assert_eq!(
+            c.commit_author.as_deref(),
+            Some("Alice <alice@example.com>")
+        );
+        // Invalid values are rejected; the message states the expected format.
+        assert!(merge_str(r#"commit_identity = "nope""#).is_err());
+        let err = merge_str(r#"commit_author = "no brackets""#).unwrap_err();
+        assert!(
+            err.to_string().contains(r#"expected "Name <email>""#),
+            "{err:#}"
+        );
+        // env beats toml (no other test asserts on this key, so a brief set_var is safe).
+        unsafe { std::env::set_var("HOVERSTARE_COMMIT_IDENTITY", "author") };
+        let c = merge_str(r#"commit_identity = "bot""#).unwrap();
+        unsafe { std::env::remove_var("HOVERSTARE_COMMIT_IDENTITY") };
+        assert_eq!(c.commit_identity, CommitIdentity::Author);
     }
 
     #[test]

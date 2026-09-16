@@ -178,6 +178,12 @@ async fn run_develop(args: DevelopArgs) -> i32 {
             model: &cfg.model,
             temperature: cfg.temp(0.0),
             budget_calls: budget,
+            // Local `--task` mode has no trigger: fall back to the bot identity.
+            commit_identity: crate::git::resolve_commit_identity(
+                cfg.commit_identity,
+                None,
+                cfg.commit_author.as_deref(),
+            ),
         })
         .await
         {

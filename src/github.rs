@@ -885,17 +885,23 @@ impl GitHubClient {
         Ok(Self::error_for_status(resp).await?.json().await?)
     }
 
-    /// Squash-merge a PR; returns the merge commit sha.
+    /// Squash-merge a PR; returns the merge commit sha. `commit_message` (when
+    /// set) becomes the squash commit body, e.g. a co-author trailer
+    /// (spec 11 §3.3).
     pub async fn merge_pull_request(
         &self,
         repo: &Repo,
         number: u64,
+        commit_message: Option<&str>,
     ) -> Result<String, GitHubError> {
         let url = format!(
             "{}/repos/{}/{}/pulls/{number}/merge",
             self.api, repo.owner, repo.name
         );
-        let payload = serde_json::json!({ "merge_method": "squash" });
+        let mut payload = serde_json::json!({ "merge_method": "squash" });
+        if let Some(message) = commit_message {
+            payload["commit_message"] = serde_json::Value::String(message.to_string());
+        }
         let resp = self
             .send(|| self.request(reqwest::Method::PUT, &url).json(&payload))
             .await?;

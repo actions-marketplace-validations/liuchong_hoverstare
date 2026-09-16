@@ -3,6 +3,8 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::config::CommitIdentity;
+
 #[derive(Debug, thiserror::Error)]
 pub enum GitError {
     #[error("not a git repository: {0}")]
@@ -11,6 +13,110 @@ pub enum GitError {
     Conflict(String),
     #[error("git {0}")]
     Other(String),
+}
+
+/// Bot identity used for develop-mode commits (spec 11 §3.3).
+pub const BOT_NAME: &str = "hoverstare[bot]";
+pub const BOT_EMAIL: &str = "hoverstare[bot]@users.noreply.github.com";
+
+/// A git identity in `Name <email>` form.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Identity {
+    pub name: String,
+    pub email: String,
+}
+
+impl Identity {
+    /// The `--author="Name <email>"` form.
+    pub fn spec(&self) -> String {
+        format!("{} <{}>", self.name, self.email)
+    }
+}
+
+/// Author/committer pair (plus an optional message trailer) for one develop
+/// commit (spec 11 §3.3). The committer is always the bot: the author says
+/// whose instruction produced the change.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommitAuthor {
+    /// `git commit --author`.
+    pub author: Identity,
+    /// `git -c user.name/user.email` (who actually ran git).
+    pub committer: Identity,
+    /// Trailing paragraph appended to the message, e.g. a `Co-authored-by:`.
+    pub trailer: Option<String>,
+}
+
+impl CommitAuthor {
+    /// Author = committer = hoverstare[bot], no trailer (the historical behaviour).
+    pub fn bot() -> Self {
+        let bot = bot_identity();
+        Self {
+            author: bot.clone(),
+            committer: bot,
+            trailer: None,
+        }
+    }
+}
+
+fn bot_identity() -> Identity {
+    Identity {
+        name: BOT_NAME.to_string(),
+        email: BOT_EMAIL.to_string(),
+    }
+}
+
+/// GitHub exposes no email for a login; attribute it to the noreply address
+/// (overridable through `commit_author`).
+fn trigger_identity(login: &str) -> Identity {
+    Identity {
+        name: login.to_string(),
+        email: format!("{login}@users.noreply.github.com"),
+    }
+}
+
+/// Parse a `Name <email>` identity (the `commit_author` config form).
+pub fn parse_identity(spec: &str) -> Option<Identity> {
+    let (name, rest) = spec.trim().split_once('<')?;
+    let email = rest.strip_suffix('>')?.trim();
+    let name = name.trim();
+    if name.is_empty() || email.is_empty() || email.contains(['<', '>']) || !email.contains('@') {
+        return None;
+    }
+    Some(Identity {
+        name: name.to_string(),
+        email: email.to_string(),
+    })
+}
+
+/// Resolve the commit contract for a develop round (spec 11 §3.3).
+///
+/// `trigger` is the login of the instruction's author (the triggering comment,
+/// falling back to the issue/PR author); when it is missing — or is the bot
+/// itself, as in a self-triggered round — every mode degrades to
+/// [`CommitAuthor::bot`], never to an invented `<login>@users.noreply.github.com`
+/// author. `override_` is an explicit `Name <email>` from `commit_author` and
+/// only applies to the human (`author`/`coauthor`) modes.
+pub fn resolve_commit_identity(
+    mode: CommitIdentity,
+    trigger: Option<&str>,
+    override_: Option<&str>,
+) -> CommitAuthor {
+    let Some(trigger) = trigger.map(str::trim).filter(|t| !t.is_empty()) else {
+        return CommitAuthor::bot();
+    };
+    if mode == CommitIdentity::Bot || trigger == BOT_NAME {
+        return CommitAuthor::bot();
+    }
+    let author = override_
+        .and_then(parse_identity)
+        .unwrap_or_else(|| trigger_identity(trigger));
+    let trailer = (mode == CommitIdentity::Coauthor)
+        .then(|| format!("Co-authored-by: {BOT_NAME} <{BOT_EMAIL}>"));
+    CommitAuthor {
+        author,
+        committer: bot_identity(),
+        trailer,
+    }
 }
 
 pub struct GitRepo {
@@ -115,15 +221,17 @@ impl GitRepo {
     /// develops: on conflict the merge is aborted (the tree is left exactly as
     /// the human will find it) and reported as [`GitError::Conflict`].
     ///
-    /// The merge commit carries the same identity as the round's own commits:
-    /// a CI runner has no global git identity, and without one git refuses to
-    /// create the merge commit at all.
+    /// The merge commit takes the round's identity contract: its committer is
+    /// always hoverstare[bot] (the `author` still credits the trigger for the
+    /// round's own commits). A CI runner has no global git identity, and without
+    /// one git refuses to create the merge commit at all.
     pub async fn merge_ref(
         &self,
         reference: &str,
-        name: &str,
-        email: &str,
+        identity: &CommitAuthor,
     ) -> Result<(), GitError> {
+        let name = &identity.committer.name;
+        let email = &identity.committer.email;
         let identity_name = format!("user.name={name}");
         let identity_email = format!("user.email={email}");
         let out = tokio::process::Command::new("git")
@@ -176,22 +284,31 @@ impl GitRepo {
     }
 
     /// Commit staged changes; returns the new commit sha, or `None` when
-    /// there was nothing to commit.
+    /// there was nothing to commit. `identity` sets the author (the trigger or
+    /// the bot), the committer (always the bot) and an optional trailer
+    /// (spec 11 §3.3).
     pub async fn commit(
         &self,
         message: &str,
-        author_name: &str,
-        author_email: &str,
+        identity: &CommitAuthor,
     ) -> Result<Option<String>, GitError> {
+        let message = match &identity.trailer {
+            Some(trailer) => format!("{}\n\n{trailer}", message.trim_end()),
+            None => message.to_string(),
+        };
+        let user_name = format!("user.name={}", identity.committer.name);
+        let user_email = format!("user.email={}", identity.committer.email);
+        let author = identity.author.spec();
         let out = tokio::process::Command::new("git")
             .args([
                 "-c",
-                &format!("user.name={author_name}"),
+                &user_name,
                 "-c",
-                &format!("user.email={author_email}"),
+                &user_email,
                 "commit",
                 "-m",
-                message,
+                &message,
+                &format!("--author={author}"),
             ])
             .current_dir(&self.root)
             .output()
@@ -275,13 +392,16 @@ mod tests {
         repo.checkout_new("feat-x", "master").await.unwrap();
         assert_eq!(repo.current_branch().await.unwrap(), "feat-x");
         assert!(!repo.has_changes().await.unwrap());
-        assert_eq!(repo.commit("nothing", "t", "t@t").await.unwrap(), None);
+        assert_eq!(
+            repo.commit("nothing", &CommitAuthor::bot()).await.unwrap(),
+            None
+        );
 
         std::fs::write(repo.root().join("b.txt"), "two\n").unwrap();
         assert!(repo.has_changes().await.unwrap());
         repo.add_all().await.unwrap();
         let sha = repo
-            .commit("feat: add b", "hoverstare[bot]", "bot@example.com")
+            .commit("feat: add b", &CommitAuthor::bot())
             .await
             .unwrap();
         assert!(sha.is_some());
@@ -293,17 +413,18 @@ mod tests {
     #[tokio::test]
     async fn merging_the_base_is_clean_or_aborts_without_touching_the_tree() {
         let (_d, repo) = fixture().await;
+        let identity = CommitAuthor::bot();
         // A clean side branch merges into the development branch.
         repo.run(&["checkout", "-q", "-b", "dev"]).await.unwrap();
         std::fs::write(repo.root().join("dev.txt"), "dev\n").unwrap();
         repo.add_all().await.unwrap();
-        repo.commit("dev work", "t", "t@t").await.unwrap();
+        repo.commit("dev work", &identity).await.unwrap();
         repo.run(&["checkout", "-q", "master"]).await.unwrap();
         std::fs::write(repo.root().join("base.txt"), "base\n").unwrap();
         repo.add_all().await.unwrap();
-        repo.commit("base work", "t", "t@t").await.unwrap();
+        repo.commit("base work", &identity).await.unwrap();
         repo.run(&["checkout", "-q", "dev"]).await.unwrap();
-        repo.merge_ref("master", "t", "t@t")
+        repo.merge_ref("master", &identity)
             .await
             .expect("clean merge");
         assert!(repo.root().join("base.txt").exists());
@@ -312,14 +433,14 @@ mod tests {
         // own work rather than a half-merged mess.
         std::fs::write(repo.root().join("a.txt"), "dev side\n").unwrap();
         repo.add_all().await.unwrap();
-        repo.commit("dev edits a", "t", "t@t").await.unwrap();
+        repo.commit("dev edits a", &identity).await.unwrap();
         repo.run(&["checkout", "-q", "master"]).await.unwrap();
         std::fs::write(repo.root().join("a.txt"), "master side\n").unwrap();
         repo.add_all().await.unwrap();
-        repo.commit("master edits a", "t", "t@t").await.unwrap();
+        repo.commit("master edits a", &identity).await.unwrap();
         repo.run(&["checkout", "-q", "dev"]).await.unwrap();
         let error = repo
-            .merge_ref("master", "t", "t@t")
+            .merge_ref("master", &identity)
             .await
             .expect_err("conflict");
         assert!(matches!(error, GitError::Conflict(_)), "{error:?}");
@@ -398,8 +519,134 @@ mod tests {
         let repo1 = GitRepo::open(c1.path()).unwrap();
         std::fs::write(c1.path().join("a.txt"), "three\n").unwrap();
         repo1.add_all().await.unwrap();
-        repo1.commit("conflicting", "t", "t@t").await.unwrap();
+        repo1
+            .commit("conflicting", &CommitAuthor::bot())
+            .await
+            .unwrap();
         let err = repo1.pull_rebase().await.unwrap_err();
         assert!(matches!(err, GitError::Conflict(_)), "{err:?}");
+    }
+
+    async fn author_of(repo: &GitRepo) -> (String, String) {
+        split_identity(
+            &repo
+                .run(&["log", "-1", "--format=%an%x00%ae"])
+                .await
+                .unwrap(),
+        )
+    }
+
+    async fn committer_of(repo: &GitRepo) -> (String, String) {
+        split_identity(
+            &repo
+                .run(&["log", "-1", "--format=%cn%x00%ce"])
+                .await
+                .unwrap(),
+        )
+    }
+
+    fn split_identity(raw: &str) -> (String, String) {
+        let (name, email) = raw.split_once('\0').unwrap();
+        (name.to_string(), email.to_string())
+    }
+
+    async fn commit_body(repo: &GitRepo) -> String {
+        repo.run(&["log", "-1", "--format=%B"]).await.unwrap()
+    }
+
+    #[test]
+    fn resolve_identity_rules() {
+        use crate::config::CommitIdentity;
+        // No trigger → bot, whatever the mode or override.
+        assert_eq!(
+            resolve_commit_identity(CommitIdentity::Coauthor, None, None),
+            CommitAuthor::bot()
+        );
+        assert_eq!(
+            resolve_commit_identity(CommitIdentity::Coauthor, Some("  "), None),
+            CommitAuthor::bot()
+        );
+        // The override wins for the human modes, and is ignored in bot mode.
+        let c = resolve_commit_identity(
+            CommitIdentity::Coauthor,
+            Some("alice"),
+            Some("Bob <bob@example.com>"),
+        );
+        assert_eq!(c.author.name, "Bob");
+        assert_eq!(c.author.email, "bob@example.com");
+        assert_eq!(
+            c.trailer.as_deref(),
+            Some("Co-authored-by: hoverstare[bot] <hoverstare[bot]@users.noreply.github.com>")
+        );
+        assert_eq!(
+            resolve_commit_identity(CommitIdentity::Bot, Some("alice"), Some("Bob <bob@x.io>")),
+            CommitAuthor::bot()
+        );
+        // A malformed override falls back to the trigger's noreply address.
+        let d = resolve_commit_identity(CommitIdentity::Author, Some("alice"), Some("nope"));
+        assert_eq!(d.author.email, "alice@users.noreply.github.com");
+        assert!(d.trailer.is_none());
+        // A self-triggered round (the bot's own `@hoverstare continue`) has no
+        // human trigger: bot identity, and no trailer crediting the bot itself.
+        assert_eq!(
+            resolve_commit_identity(CommitIdentity::Coauthor, Some("hoverstare[bot]"), None),
+            CommitAuthor::bot()
+        );
+        assert_eq!(parse_identity("A B <a@b.c>").unwrap().name, "A B");
+    }
+
+    #[test]
+    fn parse_identity_rejects_malformed() {
+        // Valid: the `Name <email>` form, whitespace-tolerant.
+        let id = parse_identity(" Alice <alice@example.com> ").unwrap();
+        assert_eq!(id.name, "Alice");
+        assert_eq!(id.email, "alice@example.com");
+        // Malformed: no brackets, no email, empty email, empty name, unbalanced.
+        for bad in [
+            "alice@example.com",
+            "Alice alice@example.com",
+            "Alice <>",
+            "<alice@example.com>",
+            "Alice <alice@example.com",
+            "Alice alice@example.com>",
+        ] {
+            assert!(parse_identity(bad).is_none(), "accepted {bad:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn commit_identity_per_mode() {
+        use crate::config::CommitIdentity;
+        for (mode, want_author, want_trailer) in [
+            (CommitIdentity::Bot, "hoverstare[bot]", false),
+            (CommitIdentity::Author, "alice", false),
+            (CommitIdentity::Coauthor, "alice", true),
+        ] {
+            let (_d, repo) = fixture().await;
+            std::fs::write(repo.root().join("b.txt"), "two\n").unwrap();
+            repo.add_all().await.unwrap();
+            let identity = resolve_commit_identity(mode, Some("alice"), None);
+            repo.commit("feat: add b", &identity).await.unwrap();
+
+            let (an, ae) = author_of(&repo).await;
+            assert_eq!(an, want_author, "{mode:?} author name");
+            // Committer is always the bot (who ran git).
+            let (cn, ce) = committer_of(&repo).await;
+            assert_eq!(cn, "hoverstare[bot]", "{mode:?} committer name");
+            assert_eq!(ce, "hoverstare[bot]@users.noreply.github.com");
+            if mode == CommitIdentity::Bot {
+                assert_eq!(ae, "hoverstare[bot]@users.noreply.github.com");
+            } else {
+                assert_eq!(ae, "alice@users.noreply.github.com");
+            }
+            let body = commit_body(&repo).await;
+            assert_eq!(
+                body.contains(
+                    "Co-authored-by: hoverstare[bot] <hoverstare[bot]@users.noreply.github.com>"
+                ),
+                want_trailer,
+                "{mode:?} trailer"
+            );
+        }
     }
 }

@@ -9,11 +9,8 @@ use std::time::Duration;
 use crate::agent::{
     AgentBackend, Budget, ReviewRequest, ToolProfile, ToolRegistry, tools::ToolShared,
 };
-use crate::git::GitRepo;
+use crate::git::{CommitAuthor, GitRepo};
 
-/// Commit identity for bot-authored commits (spec 11 §3.3).
-pub const AUTHOR_NAME: &str = "hoverstare[bot]";
-pub const AUTHOR_EMAIL: &str = "hoverstare[bot]@users.noreply.github.com";
 /// Default implement-round budget (spec 11 §4).
 pub const DEFAULT_BUDGET_CALLS: u32 = 40;
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(600);
@@ -59,6 +56,8 @@ pub struct DevelopRequest<'a> {
     pub model: &'a str,
     pub temperature: Option<f64>,
     pub budget_calls: u32,
+    /// Author/committer/trailer for the commit (spec 11 §3.3)
+    pub commit_identity: CommitAuthor,
 }
 
 /// Run one develop round locally: agent works the task in the workspace,
@@ -73,6 +72,7 @@ pub async fn run(req: DevelopRequest<'_>) -> anyhow::Result<DevelopOutcome> {
         model,
         temperature,
         budget_calls,
+        commit_identity,
     } = req;
     let git = GitRepo::open(workspace)?;
     let base_ref = git
@@ -177,7 +177,7 @@ pub async fn run(req: DevelopRequest<'_>) -> anyhow::Result<DevelopOutcome> {
     }
     git.add_all().await?;
     let sha = git
-        .commit(&commit_message(commit_hint), AUTHOR_NAME, AUTHOR_EMAIL)
+        .commit(&commit_message(commit_hint), &commit_identity)
         .await?;
     Ok(DevelopOutcome {
         summary,
@@ -263,6 +263,7 @@ mod tests {
             model: "test-model",
             temperature: None,
             budget_calls: 10,
+            commit_identity: CommitAuthor::bot(),
         })
         .await
         .unwrap();
@@ -288,6 +289,7 @@ mod tests {
             model: "m",
             temperature: None,
             budget_calls: 10,
+            commit_identity: CommitAuthor::bot(),
         })
         .await
         .unwrap();

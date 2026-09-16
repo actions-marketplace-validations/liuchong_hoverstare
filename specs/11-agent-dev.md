@@ -65,7 +65,11 @@ token（显示 hoverstare[bot]）；写操作（git push、merge、删分支，�
 contents: write）优先用 PAT 类令牌（`HOVERSTARE_DEV_TOKEN` > `GH_PAT`），
 PAT 推送可触发 CI。App 升 contents:write 后写操作也可回落到 App token。
 GITHUB_TOKEN 的 push 不触发 CI，会导致 checks 不跑、无法合并。
-- commit 作者：`hoverstare[bot] <bot@hoverstare>`（待定，见 §8）。
+- commit 身份（`commit_identity` 配置）：**committer 始终是 `hoverstare[bot]`**
+  （git 由 bot 执行）；**author 由触发者决定**——`bot` 模式作者即 bot，`author`
+  模式作者为下达指令的人类，`coauthor` 模式在 author 之上追加
+  `Co-authored-by: hoverstare[bot]` trailer。无触发者、或触发者即 bot（自触发）
+  时一律退化为 bot 身份，不臆造 `<login>@users.noreply.github.com` 作者。
 - commit message：Conventional Commits，如
   `feat: <task summary> (hoverstare-dev #123)`。
 
@@ -85,7 +89,9 @@ GITHUB_TOKEN 的 push 不触发 CI，会导致 checks 不跑、无法合并。
 - **轮次开始先与 base 同步**：开发前把 base 分支 merge 进 PR 分支，成功且产生合并提交就立刻推送。
   原因：分支落后于 base 会让 PR 变成冲突态，而 GitHub 在冲突态**不运行任何 `pull_request` check**——
   既没有红也没有绿，round 会在"没有 CI 的世界"里盲开发。冲突时中止合并（`git merge --abort`，
-  工作区留给人）并在 PR 上明确报告，等人类解决；bot 不做 rebase。
+  工作区留给人）并在 PR 上明确报告，等人类解决；bot 不做 rebase。合并提交以
+  `hoverstare[bot]` 作为 committer（作者随之取 bot），与开发轮「author=触发者」
+  的契约不冲突（见 §3.3），身份仍只有一处权威。
 - **超时不重试**：一轮把整个预算用满仍没结束（`AgentError::Timeout`）时不换预算重跑——
   同样的分钟数会得到同样的结果，还会一直占着并发组。直接失败并说明"拆分任务或提高预算"。
   空输出/畸形响应仍然重试（3 次尝试，spec 04）。
