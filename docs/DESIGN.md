@@ -23,7 +23,7 @@ HoverStare 是一个 Rust 编写的仓库 agent，以 GitHub Action 形态分发
 
 | 能力 | 说明 | spec |
 |---|---|---|
-| agentic 审查 | 只读工具集（read_file / grep / glob / show_base_file），机器层强制只读 | [04](../specs/04-agent-backend.md) |
+| agentic 审查 | 只读工具集（read_file / grep / glob / list_dir / show_base_file），机器层强制只读 | [04](../specs/04-agent-backend.md) |
 | 多 pass 投票 | 3 路并行独立审查 → 聚类 → ≥2 票入选 → 单票 verifier 复核 | [05](../specs/05-review-pipeline.md) |
 | 精确锚定 | diff 解析出可评论行集合，非法行号按降级链吸附，同锚点合并 | [03](../specs/03-diff-engine.md) / [06](../specs/06-report-publish.md) |
 | 增量审查 | synchronize 只审 delta，全量 diff 仅用于锚定 | [07](../specs/07-incremental-state.md) |
@@ -48,7 +48,7 @@ HoverStare 是一个 Rust 编写的仓库 agent，以 GitHub Action 形态分发
                                ▼
                  hoverstare (single static binary, musl)
  ┌─────────────────────────────────────────────────────────────────────┐
- │ cli (clap):  review | mention | develop | serve                     │
+ │ cli (clap):  review | mention | develop | serve | help              │
  ├─────────────────────────────────────────────────────────────────────┤
  │ orchestrator（审查编排）/ devagent（issue·PR 主线 + 轮次报告）        │
  │ devqueue（任务队列状态机）/ develop（开发轮 → conventional commit）    │
@@ -93,15 +93,15 @@ HoverStare 是一个 Rust 编写的仓库 agent，以 GitHub Action 形态分发
 ## 配置一览（`.github/hoverstare.toml`，全部可选）
 
 ```toml
-model = "claude-sonnet-4-5"
-reformat_model = ""           # 输出修复模型，默认跟随 model
+model = "claude-sonnet-4-6"
+reformat_model = "claude-haiku-4-5"  # 输出修复模型（reformat pass），默认 claude-haiku-4-5
 passes = 3                    # 并行审查路数，1 = 关闭投票
 verify = true                 # 单票 finding 过复核
 severity_threshold = "medium" # 低于此级别只进摘要 Nitpicks
 ignore = ["*.lock", "**/dist/**", "**/*.min.js"]
 max_diff_kb = 400
 max_tool_calls = 20           # 单轮工具调用预算
-timeout_secs = 600
+timeout_secs = 900
 fail_closed = false           # true 时分析失败会让 CI 失败
 status_checks = false
 review_drafts = false
