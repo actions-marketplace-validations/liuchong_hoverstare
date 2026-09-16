@@ -1,6 +1,6 @@
 [package]
 name = "hoverstare"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 description = "Repo-aware AI code review bot for GitHub PRs: agentic multi-pass review with voting, precise inline comments, incremental finding tracking"
 repository = "https://github.com/liuchong/hoverstare"

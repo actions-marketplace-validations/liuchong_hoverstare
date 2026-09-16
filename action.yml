@@ -10,7 +10,7 @@ inputs:
   version:
     description: "hoverstare 版本（GitHub Release tag，如 v0.0.7）"
     required: false
-    default: "v0.1.0"
+    default: "v0.1.1"
   app_id:
     description: "可选：HoverStare GitHub App 的 App ID（品牌身份模式，评论显示 hoverstare[bot]）"
     required: false

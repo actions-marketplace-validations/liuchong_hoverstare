@@ -116,7 +116,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: liuchong/hoverstare@v0.0.5
+      - uses: liuchong/hoverstare@v0.1.1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           OPENAI_API_KEY: ${{ secrets.HOVERSTARE_LLM_KEY }}
@@ -193,7 +193,7 @@ del `GITHUB_TOKEN`, y **es el modo recomendado para la mayoría** (cero config).
 3. Pásalos:
 
 ```yaml
-      - uses: liuchong/hoverstare@v0.0.5
+      - uses: liuchong/hoverstare@v0.1.1
         with:
           app_id: ${{ secrets.APP_ID }}
           app_private_key: ${{ secrets.APP_PRIVATE_KEY }}
