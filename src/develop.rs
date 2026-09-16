@@ -121,6 +121,17 @@ pub async fn run(req: DevelopRequest<'_>) -> anyhow::Result<DevelopOutcome> {
                 // Keep as fallback; a later attempt may produce content.
                 run_opt = Some(run);
             }
+            Err(crate::agent::AgentError::Timeout(budget)) => {
+                // A timeout means the model had its whole budget and did not
+                // finish. Retrying spends the same minutes on the same result
+                // while holding the concurrency group, so this stops here and
+                // says what the task needed.
+                tracing::warn!("develop: agent timed out after {budget:?}; not retrying");
+                return Err(anyhow::anyhow!(
+                    "agent timed out after {budget:?} without finishing the task; \
+                     split the task or raise the budget"
+                ));
+            }
             Err(e) => {
                 tracing::warn!(
                     "develop: agent call failed (attempt {attempt}/{MAX_ATTEMPTS}): {e}"

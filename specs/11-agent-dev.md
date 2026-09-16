@@ -82,6 +82,9 @@ GITHUB_TOKEN 的 push 不触发 CI，会导致 checks 不跑、无法合并。
 - 写入后返回简短确认（路径 + 字节数），不回显全文（省 token）。
 - Budget 复用：`max_tool_calls` 对读+写统一计数；默认 implement 轮
   budget=40 次调用、timeout=10min。
+- **超时不重试**：一轮把整个预算用满仍没结束（`AgentError::Timeout`）时不换预算重跑——
+  同样的分钟数会得到同样的结果，还会一直占着并发组。直接失败并说明"拆分任务或提高预算"。
+  空输出/畸形响应仍然重试（3 次尝试，spec 04）。
 
 ## 5. Issue 主线
 
