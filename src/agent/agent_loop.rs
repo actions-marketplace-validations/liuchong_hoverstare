@@ -34,6 +34,23 @@ const SUMMARY_INPUT_RATIO: f64 = 0.5;
 /// Digest bound when no model summary is available.
 const DIGEST_MAX_CHARS: usize = 2_400;
 
+/// A transient provider failure (rate limit, 5xx, dropped connection) is worth
+/// retrying inside the loop; the pass-level retry above would otherwise throw
+/// away every tool call already made.
+const MODEL_MAX_ATTEMPTS: u32 = 3;
+const MODEL_RETRY_BASE: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// Result markers that make a repeated identical call worth refusing.
+const UNHELPFUL_MARKERS: &[&str] = &[
+    "error",
+    "does not exist",
+    "denied",
+    "invalid",
+    "budget exhausted",
+    "failed",
+    "unknown tool",
+];
+
 /// The summary message that stands in for a dropped prefix.
 const SUMMARY_PREFIX: &str = "[Earlier conversation summary]";
 
@@ -96,6 +113,43 @@ impl AgentLoop {
                 max_tokens: MAX_OUTPUT_TOKENS,
             })
             .await
+    }
+
+    /// One main-loop call with bounded retries for transient provider failures.
+    ///
+    /// An over-window refusal is never retried here: it is recovered instead.
+    /// The pass-level retry above this loop would rerun the whole analysis and
+    /// throw away every tool call already made, so a rate limit or a dropped
+    /// connection is worth absorbing in place.
+    async fn call_retrying(
+        &self,
+        model: &str,
+        system_prompt: &str,
+        items: &[ConversationItem],
+        specs: &[tools::ToolSpec],
+        temperature: Option<f64>,
+    ) -> Result<ChatReply, AgentError> {
+        let mut attempt = 0u32;
+        loop {
+            match self
+                .call(model, system_prompt, items, specs, temperature)
+                .await
+            {
+                Ok(reply) => return Ok(reply),
+                Err(AgentError::Backend(message))
+                    if attempt + 1 < MODEL_MAX_ATTEMPTS && is_transient_backend_error(&message) =>
+                {
+                    let delay = MODEL_RETRY_BASE * 4u32.pow(attempt);
+                    warn!(
+                        "transient model error, retrying in {delay:?} ({}/{MODEL_MAX_ATTEMPTS}): {message}",
+                        attempt + 1
+                    );
+                    tokio::time::sleep(delay).await;
+                    attempt += 1;
+                }
+                Err(error) => return Err(error),
+            }
+        }
     }
 
     /// Ask the model to summarize `items` (spec 13, threshold form).
@@ -186,11 +240,15 @@ impl AgentLoop {
     }
 
     /// Replace the planned prefix of `items` with `summary` (spec 13).
+    ///
+    /// Everything before `plan.start` stays: that is the pinned run task, and it
+    /// survives every compaction by construction.
     fn apply_plan(items: &mut Vec<ConversationItem>, plan: Plan, summary: &str) {
         let tail = items.split_off(plan.cut + 1);
-        *items = vec![ConversationItem::User {
+        items.truncate(plan.start);
+        items.push(ConversationItem::User {
             text: format!("{SUMMARY_PREFIX}\n{summary}"),
-        }];
+        });
         items.extend(tail);
     }
 
@@ -210,7 +268,13 @@ impl AgentLoop {
             let mut usage = Usage::default();
             let mut executed = 0u32;
             let mut recovered = false;
+            let mut just_recovered = false;
             let mut dump: Option<PathBuf> = None;
+            // Signature -> result of the last execution. A model that repeats a
+            // call whose result cannot change would otherwise spend the budget
+            // re-reading the same nothing.
+            let mut seen_calls: std::collections::HashMap<String, String> =
+                std::collections::HashMap::new();
             let specs = if shared.is_some() {
                 tools::specs(profile)
             } else {
@@ -219,11 +283,17 @@ impl AgentLoop {
 
             let outcome = loop {
                 // Threshold compaction: shrink before the provider refuses.
-                if self.compaction.enabled {
+                // Not immediately after a recovery: that pass just wrote a
+                // summary, and summarizing a summary costs a request and buys
+                // nothing back.
+                if self.compaction.enabled && !just_recovered {
                     let tokens = self.call_tokens(&req.system_prompt, &items, &specs);
                     if tokens >= self.compaction.threshold_tokens(self.window)
-                        && let Some(plan) =
-                            compaction::plan(&items, self.compaction.keep_tokens(self.window))
+                        && let Some(plan) = compaction::plan(
+                            &items,
+                            self.compaction.keep_tokens(self.window),
+                            pinned_prefix(&items),
+                        )
                     {
                         let previous = previous_summary(&items);
                         let dropped: Vec<ConversationItem> = items[plan.start..=plan.cut].to_vec();
@@ -262,7 +332,7 @@ impl AgentLoop {
                     specs.clone()
                 };
                 match self
-                    .call(
+                    .call_retrying(
                         &req.model,
                         &req.system_prompt,
                         &items,
@@ -290,11 +360,36 @@ impl AgentLoop {
                             };
                             executed += 1;
                             let started = std::time::Instant::now();
-                            let output = shared
-                                .run(call.name.clone(), format!("{:?}", call.arguments), async {
-                                    tools::dispatch(&call.name, &call.arguments, &shared).await
-                                })
-                                .await;
+                            let signature = format!("{}:{}", call.name, call.arguments);
+                            let output = match seen_calls.get(&signature) {
+                                // The model repeating a call whose result cannot
+                                // change would spend the budget re-reading the
+                                // same nothing.
+                                Some(previous) if is_unhelpful(previous) => {
+                                    "unchanged repeat: this exact call already returned a result \
+                                     that will not change. Use it, or try a different path or \
+                                     pattern."
+                                        .to_string()
+                                }
+                                _ => {
+                                    let output = shared
+                                        .run(
+                                            call.name.clone(),
+                                            format!("{:?}", call.arguments),
+                                            async {
+                                                tools::dispatch(
+                                                    &call.name,
+                                                    &call.arguments,
+                                                    &shared,
+                                                )
+                                                .await
+                                            },
+                                        )
+                                        .await;
+                                    seen_calls.insert(signature, output.clone());
+                                    output
+                                }
+                            };
                             trace.push(ToolCallRecord {
                                 name: call.name.clone(),
                                 args_summary: format!("{:?}", call.arguments),
@@ -314,9 +409,11 @@ impl AgentLoop {
                         let Some(shared) = shared.clone() else {
                             break Err(AgentError::ContextOverflow(message));
                         };
-                        let Some(plan) =
-                            compaction::plan(&items, self.compaction.keep_tokens(self.window))
-                        else {
+                        let Some(plan) = compaction::plan(
+                            &items,
+                            self.compaction.keep_tokens(self.window),
+                            pinned_prefix(&items),
+                        ) else {
                             break Err(AgentError::ContextOverflow(message));
                         };
                         let previous = previous_summary(&items);
@@ -346,6 +443,7 @@ impl AgentLoop {
                                 "context overflow: could not write the dump ({e}); the crude digest still stands"
                             ),
                         }
+                        just_recovered = true;
                         match self
                             .summarize_with_dump(
                                 &req.model,
@@ -358,7 +456,11 @@ impl AgentLoop {
                             .await
                         {
                             Some(precise) => {
-                                if let Some(ConversationItem::User { text }) = items.first_mut() {
+                                // The summary the crude stage left sits at the
+                                // plan's start; the pinned task before it stays.
+                                if let Some(ConversationItem::User { text }) =
+                                    items.get_mut(plan.start)
+                                {
                                     *text = format!("{SUMMARY_PREFIX}\n{precise}");
                                 }
                                 info!("context overflow: precise summary written from the dump");
@@ -384,6 +486,44 @@ impl AgentLoop {
                 usage,
             })
         })
+    }
+}
+
+/// Whether a provider failure is the kind that succeeds on a second try.
+fn is_transient_backend_error(message: &str) -> bool {
+    let text = message.to_ascii_lowercase();
+    [
+        "429",
+        "rate limit",
+        "timeout",
+        "timed out",
+        "connection",
+        "500",
+        "502",
+        "503",
+        "504",
+        "overloaded",
+        "temporarily",
+    ]
+    .iter()
+    .any(|needle| text.contains(needle))
+}
+
+/// Whether a tool result is the kind a retry of the same call cannot improve.
+fn is_unhelpful(result: &str) -> bool {
+    let text = result.to_ascii_lowercase();
+    UNHELPFUL_MARKERS.iter().any(|marker| text.contains(marker))
+}
+
+/// Items at the front that no compaction may replace: the run's own task.
+///
+/// After a first compaction the front is the summary itself, and a summary of a
+/// summary (with the previous one passed verbatim) is the designed behaviour.
+fn pinned_prefix(items: &[ConversationItem]) -> usize {
+    if previous_summary(items).is_some() {
+        0
+    } else {
+        1
     }
 }
 
@@ -415,6 +555,7 @@ mod tests {
     use super::*;
     use crate::agent::{Budget, ToolCall, ToolRegistry};
     use std::sync::Mutex;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     type Script = Box<dyn Fn(&ChatCall, usize) -> Result<ChatReply, AgentError> + Send + Sync>;
 
@@ -446,7 +587,9 @@ mod tests {
                 calls.push(call.clone());
                 index
             };
-            match self.script.get(index) {
+            // A script shorter than the run repeats its last entry; most tests
+            // script the interesting calls and let the tail answer.
+            match self.script.get(index).or_else(|| self.script.last()) {
                 Some(step) => step(&call, index),
                 None => Ok(reply("done")),
             }
@@ -493,7 +636,23 @@ mod tests {
         AgentLoop::new(client, CompactionConfig::default(), window)
     }
 
-    /// Extract the dump path the overflow prompt names.
+    /// Whether a call is one of the loop's summarization requests.
+    fn is_summarizer(call: &ChatCall) -> bool {
+        call.system_prompt
+            .contains("Compress a coding conversation")
+    }
+
+    fn user_text(call: &ChatCall) -> String {
+        call.messages
+            .iter()
+            .find_map(|item| match item {
+                ConversationItem::User { text } => Some(text.clone()),
+                _ => None,
+            })
+            .unwrap_or_default()
+    }
+
+    /// Extract the dump path an overflow prompt names.
     fn dump_path_in(prompt: &str) -> Option<String> {
         let start = prompt.find(".hoverstare/context-")?;
         let rest = &prompt[start..];
@@ -501,11 +660,39 @@ mod tests {
         Some(rest[..end].to_string())
     }
 
+    /// A workspace with two sizeable files: enough conversation to compact.
+    fn two_file_workspace() -> (tempfile::TempDir, Arc<ToolShared>) {
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["a.rs", "b.rs"] {
+            std::fs::write(
+                dir.path().join(name),
+                format!("// {name}\n{}", "content ".repeat(800)),
+            )
+            .unwrap();
+        }
+        let shared = ToolShared::new(dir.path().to_path_buf(), "HEAD", 8);
+        (dir, shared)
+    }
+
+    /// One script entry for the whole run: it dispatches by prompt content, so
+    /// a summarization call interleaved anywhere cannot shift the answers of
+    /// the conversation under test. `answer` sees the index among main calls.
+    fn scripted(
+        answer: impl Fn(usize, &ChatCall) -> Result<ChatReply, AgentError> + Send + Sync + 'static,
+    ) -> Script {
+        let counter = Arc::new(AtomicUsize::new(0));
+        Box::new(move |call, _index| {
+            if is_summarizer(call) {
+                return Ok(reply("## Goal\nsummary"));
+            }
+            let index = counter.fetch_add(1, Ordering::SeqCst);
+            answer(index, call)
+        })
+    }
+
     #[tokio::test]
     async fn a_plain_answer_needs_one_call() {
-        let client = ScriptedClient::new(vec![Box::new(|_call, _index| {
-            Ok(reply("{\"findings\":[]}"))
-        })]);
+        let client = ScriptedClient::new(vec![Box::new(|_call, _| Ok(reply("{\"findings\":[]}")))]);
         let run = loop_with(client.clone(), 100_000)
             .review(request(None, 0))
             .await
@@ -517,19 +704,15 @@ mod tests {
 
     #[tokio::test]
     async fn tool_calls_are_executed_and_fed_back() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("lib.rs"), "fn main() {}\n").unwrap();
-        let shared = ToolShared::new(dir.path().to_path_buf(), "HEAD", 5);
-        let client = ScriptedClient::new(vec![
-            Box::new(|_call, _| {
-                Ok(tool_reply(
-                    "1",
-                    "read_file",
-                    serde_json::json!({"path": "lib.rs"}),
-                ))
-            }),
-            Box::new(|_call, _| Ok(reply("done"))),
-        ]);
+        let (_dir, shared) = two_file_workspace();
+        let client = ScriptedClient::new(vec![scripted(|index, _call| match index {
+            0 => Ok(tool_reply(
+                "1",
+                "read_file",
+                serde_json::json!({"path": "a.rs"}),
+            )),
+            _ => Ok(reply("done")),
+        })]);
         let run = loop_with(client.clone(), 100_000)
             .review(request(Some(shared), 5))
             .await
@@ -540,15 +723,14 @@ mod tests {
         let calls = client.calls();
         assert_eq!(calls.len(), 2);
         let fed_back = calls[1].messages.iter().any(|item| {
-            matches!(item, ConversationItem::ToolResult { text, .. } if text.contains("fn main"))
+            matches!(item, ConversationItem::ToolResult { text, .. } if text.contains("content content"))
         });
         assert!(fed_back, "tool output must be fed back to the model");
     }
 
     #[tokio::test]
     async fn below_the_threshold_nothing_is_compacted() {
-        let dir = tempfile::tempdir().unwrap();
-        let shared = ToolShared::new(dir.path().to_path_buf(), "HEAD", 5);
+        let (_dir, shared) = two_file_workspace();
         let client = ScriptedClient::new(vec![Box::new(|_call, _| Ok(reply("done")))]);
         let mut req = request(Some(shared), 5);
         req.user_prompt = "x".repeat(4_000);
@@ -560,72 +742,100 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_threshold_replaces_the_prefix_and_keeps_the_system_prompt() {
-        let dir = tempfile::tempdir().unwrap();
-        let shared = ToolShared::new(dir.path().to_path_buf(), "HEAD", 5);
-        let client = ScriptedClient::new(vec![
-            Box::new(|_call, _| {
-                Ok(tool_reply(
-                    "1",
-                    "glob",
-                    serde_json::json!({"pattern": "*.rs"}),
-                ))
-            }),
-            Box::new(|_call, _| {
-                Ok(reply(
-                    "## Goal\nget the review done\n## Progress\ndiff read",
-                ))
-            }),
-            Box::new(|_call, _| Ok(reply("final"))),
-        ]);
-        let mut req = request(Some(shared), 5);
-        req.user_prompt = "x".repeat(4_000);
-        let run = loop_with(client.clone(), 1_000).review(req).await.unwrap();
+    async fn the_threshold_summarizes_the_middle_and_pins_the_task() {
+        let (_dir, shared) = two_file_workspace();
+        let client = ScriptedClient::new(vec![scripted(|index, _call| match index {
+            0 => Ok(tool_reply(
+                "1",
+                "read_file",
+                serde_json::json!({"path": "a.rs"}),
+            )),
+            1 => Ok(tool_reply(
+                "2",
+                "read_file",
+                serde_json::json!({"path": "b.rs"}),
+            )),
+            _ => Ok(reply("final")),
+        })]);
+        let run = loop_with(client.clone(), 400)
+            .review(request(Some(shared), 8))
+            .await
+            .unwrap();
         assert_eq!(run.raw_output, "final");
         let calls = client.calls();
-        assert_eq!(calls.len(), 3);
-        assert!(
-            calls[1]
-                .system_prompt
-                .contains("Compress a coding conversation")
-        );
-        assert!(calls[1].messages.iter().any(|item| matches!(
+        let summarizer = calls
+            .iter()
+            .position(is_summarizer)
+            .expect("a summarization request");
+        assert!(calls[summarizer].messages.iter().any(|item| matches!(
             item,
             ConversationItem::User { text } if text.contains("<conversation>")
         )));
-        assert_eq!(calls[2].system_prompt, "SYSTEM PROMPT");
+        let after = calls
+            .iter()
+            .skip(summarizer + 1)
+            .find(|call| !is_summarizer(call))
+            .expect("the compacted request");
+        assert_eq!(
+            after.system_prompt, "SYSTEM PROMPT",
+            "the system prompt is untouched"
+        );
+        let texts: Vec<String> = after
+            .messages
+            .iter()
+            .filter_map(|item| match item {
+                ConversationItem::User { text } => Some(text.clone()),
+                _ => None,
+            })
+            .collect();
         assert!(
-            calls[2].messages.iter().any(|item| matches!(
-                item,
-                ConversationItem::User { text } if text.contains("get the review done")
-            )),
-            "the summary replaces the dropped prefix"
+            texts
+                .iter()
+                .any(|text| text.starts_with("[Earlier conversation summary]")),
+            "the dropped turns became a summary"
+        );
+        assert!(
+            texts.iter().any(|text| text == "review this diff"),
+            "the run's own task prompt is pinned and never summarized away"
         );
     }
 
     #[tokio::test]
     async fn a_failed_summarizer_leaves_the_deterministic_digest() {
-        let dir = tempfile::tempdir().unwrap();
-        let shared = ToolShared::new(dir.path().to_path_buf(), "HEAD", 5);
-        let client = ScriptedClient::new(vec![
-            Box::new(|_call, _| {
-                Ok(tool_reply(
+        let (_dir, shared) = two_file_workspace();
+        let counter = Arc::new(AtomicUsize::new(0));
+        let client = ScriptedClient::new(vec![Box::new(move |call: &ChatCall, _index| {
+            if is_summarizer(call) {
+                return Err(AgentError::Backend("summarizer exploded".to_string()));
+            }
+            match counter.fetch_add(1, Ordering::SeqCst) {
+                0 => Ok(tool_reply(
                     "1",
-                    "glob",
-                    serde_json::json!({"pattern": "*.rs"}),
-                ))
-            }),
-            Box::new(|_call, _| Err(AgentError::Backend("summarizer exploded".to_string()))),
-            Box::new(|_call, _| Ok(reply("final"))),
-        ]);
-        let mut req = request(Some(shared), 5);
-        req.user_prompt = "x".repeat(4_000);
-        let run = loop_with(client.clone(), 1_000).review(req).await.unwrap();
+                    "read_file",
+                    serde_json::json!({"path": "a.rs"}),
+                )),
+                1 => Ok(tool_reply(
+                    "2",
+                    "read_file",
+                    serde_json::json!({"path": "b.rs"}),
+                )),
+                _ => Ok(reply("final")),
+            }
+        })]);
+        let run = loop_with(client.clone(), 400)
+            .review(request(Some(shared), 8))
+            .await
+            .unwrap();
         assert_eq!(run.raw_output, "final");
-        let calls = client.calls();
-        assert_eq!(calls.len(), 3);
+        let after = client
+            .calls()
+            .iter()
+            .skip_while(|call| !is_summarizer(call))
+            .find(|call| !is_summarizer(call))
+            .cloned()
+            .expect("the compacted request");
         assert!(
-            calls[2].messages.iter().any(|item| matches!(
+            after.messages.iter().any(|item| matches!(
                 item,
                 ConversationItem::User { text } if text.starts_with("[Earlier conversation summary]")
             )),
@@ -635,61 +845,53 @@ mod tests {
 
     #[tokio::test]
     async fn an_overflow_is_recovered_with_a_dump_and_retried_once() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("lib.rs"), "fn main() {}\n").unwrap();
-        let shared = ToolShared::new(dir.path().to_path_buf(), "HEAD", 8);
-        let client = ScriptedClient::new(vec![
-            Box::new(|_call, _| {
-                Ok(tool_reply(
+        let (dir, shared) = two_file_workspace();
+        let counter = Arc::new(AtomicUsize::new(0));
+        let dump_reads = Arc::new(AtomicUsize::new(0));
+        let client = ScriptedClient::new(vec![Box::new(move |call: &ChatCall, _index| {
+            if is_summarizer(call) {
+                let prompt = user_text(call);
+                if prompt.contains("<crude-digest>") {
+                    if dump_reads.fetch_add(1, Ordering::SeqCst) == 0 {
+                        let path = dump_path_in(&prompt).expect("the prompt names the dump");
+                        return Ok(tool_reply(
+                            "99",
+                            "read_file",
+                            serde_json::json!({ "path": path }),
+                        ));
+                    }
+                    return Ok(reply("## Goal\nprecise summary"));
+                }
+                return Ok(reply("## Goal\nthreshold summary"));
+            }
+            match counter.fetch_add(1, Ordering::SeqCst) {
+                0 => Ok(tool_reply(
                     "1",
                     "read_file",
-                    serde_json::json!({"path": "lib.rs"}),
-                ))
-            }),
-            Box::new(|_call, _| {
-                Err(AgentError::ContextOverflow(
-                    "This model's maximum context length is 2000 tokens".to_string(),
-                ))
-            }),
-            // The summarization run reads the dump the prompt names.
-            Box::new(|call, _| {
-                let prompt = call
-                    .messages
-                    .iter()
-                    .find_map(|item| match item {
-                        ConversationItem::User { text } => Some(text.clone()),
-                        _ => None,
-                    })
-                    .unwrap_or_default();
-                let path = dump_path_in(&prompt).expect("the prompt names the dump");
-                Ok(tool_reply(
+                    serde_json::json!({"path": "a.rs"}),
+                )),
+                1 => Ok(tool_reply(
                     "2",
                     "read_file",
-                    serde_json::json!({ "path": path }),
-                ))
-            }),
-            Box::new(|_call, _| Ok(reply("## Goal\nprecise summary"))),
-            Box::new(|_call, _| Ok(reply("recovered"))),
-        ]);
-        let mut req = request(Some(shared), 8);
-        req.user_prompt = "x".repeat(4_000);
-        let run = loop_with(client.clone(), 2_000).review(req).await.unwrap();
+                    serde_json::json!({"path": "b.rs"}),
+                )),
+                2 => Err(AgentError::ContextOverflow(
+                    "This model's maximum context length is 2000 tokens".to_string(),
+                )),
+                _ => Ok(reply("recovered")),
+            }
+        })]);
+        let run = loop_with(client.clone(), 2_000)
+            .review(request(Some(shared), 8))
+            .await
+            .unwrap();
         assert_eq!(run.raw_output, "recovered");
         let calls = client.calls();
 
-        // The recovery names the dump and hands the summarizer the crude digest.
         let summarizer = calls
             .iter()
-            .position(|call| {
-                call.messages.iter().any(|item| {
-                    matches!(
-                        item,
-                        ConversationItem::User { text } if text.contains("<crude-digest>")
-                    )
-                })
-            })
-            .expect("a summarizer call carrying the digest");
-        // Its next call carries what the read tool returned for the dump.
+            .position(|call| user_text(call).contains("<crude-digest>"))
+            .expect("the overflow summarizer call");
         let after_read = &calls[summarizer + 1];
         assert!(
             after_read.messages.iter().any(|item| matches!(
@@ -707,19 +909,16 @@ mod tests {
             )),
             "the dump is inside the tool sandbox"
         );
-        // The last call is the retried request, and it carries the precise
-        // summary rather than the digest.
         let retried = calls.last().expect("retried call");
         assert!(
             retried.messages.iter().any(|item| matches!(
                 item,
                 ConversationItem::User { text }
-                    if text.contains("[Earlier conversation summary]")
+                    if text.starts_with("[Earlier conversation summary]")
                         && text.contains("precise summary")
             )),
             "the precise summary replaces the digest before the retry"
         );
-        // The dump does not outlive the run.
         let leftovers: Vec<_> = std::fs::read_dir(dir.path().join(".hoverstare"))
             .map(|entries| entries.flatten().collect())
             .unwrap_or_default();
@@ -727,25 +926,96 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_transient_provider_failure_is_retried_inside_the_loop() {
+        let (_dir, shared) = two_file_workspace();
+        let client = ScriptedClient::new(vec![scripted(|index, _call| match index {
+            0 => Ok(tool_reply(
+                "1",
+                "read_file",
+                serde_json::json!({"path": "a.rs"}),
+            )),
+            1 => Err(AgentError::Backend("429 rate limit exceeded".to_string())),
+            _ => Ok(reply("final")),
+        })]);
+        let run = loop_with(client.clone(), 100_000)
+            .review(request(Some(shared), 8))
+            .await
+            .unwrap();
+        assert_eq!(run.raw_output, "final");
+        assert_eq!(run.tool_trace.len(), 1, "the retry kept the tool work");
+    }
+
+    #[tokio::test]
+    async fn a_non_transient_failure_is_returned_at_once() {
+        let (_dir, shared) = two_file_workspace();
+        let client = ScriptedClient::new(vec![Box::new(|_call, _| {
+            Err(AgentError::Backend("invalid api key".to_string()))
+        })]);
+        let result = loop_with(client.clone(), 100_000)
+            .review(request(Some(shared), 8))
+            .await;
+        assert!(matches!(result, Err(AgentError::Backend(_))));
+        assert_eq!(client.calls().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn repeating_an_unhelpful_call_is_refused_not_re_executed() {
+        let (_dir, shared) = two_file_workspace();
+        let client = ScriptedClient::new(vec![scripted(|index, _call| match index {
+            0 | 1 => Ok(tool_reply(
+                "1",
+                "read_file",
+                serde_json::json!({"path": "does-not-exist.rs"}),
+            )),
+            _ => Ok(reply("final")),
+        })]);
+        let run = loop_with(client.clone(), 100_000)
+            .review(request(Some(shared), 8))
+            .await
+            .unwrap();
+        assert_eq!(run.raw_output, "final");
+        let refusal = client
+            .calls()
+            .iter()
+            .flat_map(|call| call.messages.iter())
+            .filter_map(|item| match item {
+                ConversationItem::ToolResult { text, .. } => Some(text.clone()),
+                _ => None,
+            })
+            .find(|text| text.contains("unchanged repeat"));
+        assert!(refusal.is_some(), "the repeated failing call is refused");
+        assert_eq!(
+            run.tool_trace.len(),
+            2,
+            "both calls count against the budget"
+        );
+    }
+
+    #[tokio::test]
     async fn a_second_overflow_is_not_retried_forever() {
-        let dir = tempfile::tempdir().unwrap();
-        let shared = ToolShared::new(dir.path().to_path_buf(), "HEAD", 8);
-        let client = ScriptedClient::new(vec![
-            Box::new(|_call, _| {
-                Ok(tool_reply(
-                    "1",
-                    "glob",
-                    serde_json::json!({"pattern": "*.rs"}),
-                ))
-            }),
-            Box::new(|_call, _| Err(AgentError::ContextOverflow("too long".to_string()))),
-            Box::new(|_call, _| Ok(reply("## Goal\nsummary"))),
-            Box::new(|_call, _| Err(AgentError::ContextOverflow("still too long".to_string()))),
-        ]);
-        let mut req = request(Some(shared), 8);
-        req.user_prompt = "x".repeat(4_000);
-        let result = loop_with(client.clone(), 4_000).review(req).await;
+        let (_dir, shared) = two_file_workspace();
+        let client = ScriptedClient::new(vec![scripted(|index, _call| match index {
+            0 => Ok(tool_reply(
+                "1",
+                "read_file",
+                serde_json::json!({"path": "a.rs"}),
+            )),
+            1 => Ok(tool_reply(
+                "2",
+                "read_file",
+                serde_json::json!({"path": "b.rs"}),
+            )),
+            _ => Err(AgentError::ContextOverflow("still too long".to_string())),
+        })]);
+        let result = loop_with(client.clone(), 2_000)
+            .review(request(Some(shared), 8))
+            .await;
         assert!(matches!(result, Err(AgentError::ContextOverflow(_))));
-        assert_eq!(client.calls().len(), 4, "one recovery, one retry, no loop");
+        let main_calls = client
+            .calls()
+            .iter()
+            .filter(|call| !is_summarizer(call))
+            .count();
+        assert_eq!(main_calls, 4, "two turns, one recovery, one retry, no loop");
     }
 }

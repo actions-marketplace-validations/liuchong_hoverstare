@@ -210,13 +210,44 @@ impl ToolShared {
     }
 }
 
-/// Truncate output to MAX_OUTPUT_BYTES
-fn cap_output(mut s: String) -> String {
+/// Truncate output to MAX_OUTPUT_BYTES, keeping both ends.
+///
+/// Producers here append their notes last: a shell exit status, a diagnostic
+/// line, the count of what was omitted. A head-only cut deletes exactly the
+/// lines that explain the result, so the tail is kept and the middle is what
+/// gets dropped.
+fn cap_output(s: String) -> String {
     if s.len() > MAX_OUTPUT_BYTES {
-        s.truncate(MAX_OUTPUT_BYTES);
-        s.push_str("\n... [output truncated]\n");
+        let tail_len = MAX_OUTPUT_BYTES / 4;
+        let head_len = MAX_OUTPUT_BYTES - tail_len;
+        let head = floor_char_boundary(&s, head_len);
+        let tail_start = ceil_char_boundary(&s, s.len() - tail_len);
+        return format!(
+            "{}\n... [{} bytes omitted from the middle] ...\n{}",
+            &s[..head],
+            s.len() - head - (s.len() - tail_start),
+            &s[tail_start..]
+        );
     }
     s
+}
+
+/// Largest char boundary at or below `index`.
+fn floor_char_boundary(text: &str, index: usize) -> usize {
+    let mut index = index.min(text.len());
+    while index > 0 && !text.is_char_boundary(index) {
+        index -= 1;
+    }
+    index
+}
+
+/// Smallest char boundary at or above `index`.
+fn ceil_char_boundary(text: &str, index: usize) -> usize {
+    let mut index = index.min(text.len());
+    while index < text.len() && !text.is_char_boundary(index) {
+        index += 1;
+    }
+    index
 }
 
 /// read_file: read a workspace file (with line numbers), ≤400 lines and ≤64KB per call
