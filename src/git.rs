@@ -183,6 +183,21 @@ impl GitRepo {
         self.run(&["rev-parse", "--abbrev-ref", "HEAD"]).await
     }
 
+    /// `git merge-base --is-ancestor <ancestor> <head>`: whether `ancestor` is
+    /// reachable from `head`. An unknown object and an unrelated history both
+    /// make git exit non-zero, and both mean the same thing to the caller (the
+    /// artifact gate): do not trust the recorded commit.
+    pub async fn is_ancestor(&self, ancestor: &str, head: &str) -> Result<bool, GitError> {
+        match self
+            .run(&["merge-base", "--is-ancestor", ancestor, head])
+            .await
+        {
+            Ok(_) => Ok(true),
+            Err(GitError::Other(_)) => Ok(false),
+            Err(e) => Err(e),
+        }
+    }
+
     /// Create and switch to a new branch from `from` (e.g. "origin/master").
     pub async fn checkout_new(&self, name: &str, from: &str) -> Result<(), GitError> {
         self.run(&["checkout", "-b", name, from]).await.map(|_| ())

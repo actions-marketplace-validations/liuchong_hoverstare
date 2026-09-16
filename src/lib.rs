@@ -5,6 +5,7 @@ pub mod cli;
 pub mod config;
 pub mod devagent;
 pub mod develop;
+pub mod devqueue;
 pub mod diff;
 pub mod event;
 pub mod findings;

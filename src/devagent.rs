@@ -14,6 +14,10 @@ use crate::agent::tools::ToolShared;
 use crate::agent::{AgentBackend, Budget, ReviewRequest, ToolRegistry};
 use crate::config::{Actor, Config, PermissionKey};
 use crate::develop::{self};
+use crate::devqueue::{
+    Idle, ItemState, MergeGate, QUEUE_PREFIX, QueueState, RoundRecord, checklist, merge_gate,
+    precheck, summary_line,
+};
 use crate::event::{DevEvent, DevKind};
 use crate::git::GitRepo;
 use crate::github::{GitHubClient, IssueComment, PullRequest, Repo};
@@ -46,6 +50,9 @@ pub struct DevMarker {
     pub r: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pr: Option<u64>,
+    /// Commit pushed by this round (artifact gate of the next round).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sha: Option<String>,
 }
 
 pub fn marker_text(marker: &DevMarker) -> String {
@@ -74,8 +81,10 @@ fn latest_marker(comments: &[IssueComment]) -> Option<DevMarker> {
 pub enum DevCommand {
     /// `@hoverstare go` (issue: implement the plan)
     Go,
-    /// `@hoverstare merge` (PR only)
-    Merge,
+    /// `@hoverstare merge` (PR only); `force` discards the unfinished queue.
+    Merge { force: bool },
+    /// `@hoverstare queue` (PR only): print the visible queue checklist
+    Queue,
     /// `@hoverstare help` or `@hoverstare /help`: print unified help
     Help,
     /// Everything else: discussion (issue) or dev instruction (PR)
@@ -83,16 +92,47 @@ pub enum DevCommand {
 }
 
 pub fn parse_dev_command(body: &str) -> Option<DevCommand> {
+    // Humans naturally quote earlier commands in the same comment, so the
+    // *newest* mention wins (issue #15). If that trailing mention carries no
+    // command text (a bare `@hoverstare`), fall back to the previous one.
     let stripped = strip_code_blocks(body);
-    let at = stripped.find("@hoverstare")?;
-    let after = stripped[at + "@hoverstare".len()..].trim();
+    let after = last_mention_tail(&stripped)?.trim();
     let first = after.split_whitespace().next().unwrap_or("").to_lowercase();
     Some(match first.as_str() {
         "go" => DevCommand::Go,
-        "merge" => DevCommand::Merge,
+        "merge" => DevCommand::Merge {
+            force: after
+                .split_whitespace()
+                .skip(1)
+                .any(|w| w.eq_ignore_ascii_case("force")),
+        },
+        "queue" => DevCommand::Queue,
         "help" | "/help" => DevCommand::Help,
         _ => DevCommand::Task(after.to_string()),
     })
+}
+
+/// Text that follows the last `@hoverstare` mention in `stripped` (up to the
+/// next mention). A trailing mention with no command text falls back to the
+/// most recent mention that has one; `None` when there is no mention at all.
+fn last_mention_tail(stripped: &str) -> Option<&str> {
+    const MARKER: &str = "@hoverstare";
+    let mut last_any: Option<&str> = None;
+    let mut last_with_command: Option<&str> = None;
+    let mut rest = stripped;
+    while let Some(idx) = rest.find(MARKER) {
+        let after = &rest[idx + MARKER.len()..];
+        let tail = match after.find(MARKER) {
+            Some(next) => &after[..next],
+            None => after,
+        };
+        last_any = Some(tail);
+        if !tail.trim().is_empty() {
+            last_with_command = Some(tail);
+        }
+        rest = after;
+    }
+    last_with_command.or(last_any)
 }
 
 /// Branch name slug from an issue title (spec 11 §8.3).
@@ -140,7 +180,7 @@ pub async fn run_event(cfg: &Config, ev: &DevEvent) -> anyhow::Result<String> {
     // allowed (spec 11 §6); everything else is checked against the configured key.
     if !ev.is_self_trigger() {
         let key = match cmd {
-            DevCommand::Merge => PermissionKey::Merge,
+            DevCommand::Merge { .. } => PermissionKey::Merge,
             _ => PermissionKey::Develop,
         };
         let evaluator = cfg.permissions_evaluator();
@@ -187,7 +227,8 @@ async fn issue_flow(
     let comments = gh.list_issue_comments(repo, ev.number).await?;
     let marker = latest_marker(&comments);
     match cmd {
-        DevCommand::Merge => Ok("ignored: merge is only valid on PRs".to_string()),
+        DevCommand::Merge { .. } => Ok("ignored: merge is only valid on PRs".to_string()),
+        DevCommand::Queue => Ok("invalid: queue is only valid on PRs".to_string()),
         DevCommand::Help => unreachable!("handled in run_event"),
         DevCommand::Go => implement_issue(cfg, gh, repo, ev, &comments, marker).await,
         DevCommand::Task(text) => {
@@ -265,6 +306,7 @@ async fn discuss_round(
         m: "plan".into(),
         r: round,
         pr: None,
+        sha: None,
     };
     gh.create_issue_comment(
         repo,
@@ -378,6 +420,7 @@ async fn implement_issue(
         m: "impl".into(),
         r: 0,
         pr: Some(pr.number),
+        sha: None,
     };
     gh.create_issue_comment(
         repo,
@@ -417,7 +460,8 @@ async fn pr_flow(
         return Ok("rejected: PR head branch is not in this repo".into());
     }
     match cmd {
-        DevCommand::Merge => merge_flow(cfg, gh, repo, ev, &pr).await,
+        DevCommand::Merge { force } => merge_flow(cfg, gh, repo, ev, &pr, force).await,
+        DevCommand::Queue => queue_flow(gh, repo, ev).await,
         DevCommand::Help => unreachable!("handled in run_event"),
         DevCommand::Go => {
             pr_dev_round(
@@ -446,16 +490,32 @@ async fn pr_dev_round(
     human: bool,
 ) -> anyhow::Result<String> {
     let comments = gh.list_issue_comments(repo, ev.number).await?;
-    let marker = latest_marker(&comments);
-    let round = marker.as_ref().map(|m| m.r).unwrap_or(0) + 1;
-    if !round_allowed(round, human) {
-        gh.create_issue_comment(
-            repo,
-            ev.number,
-            &format!("已达最大开发轮次（{MAX_PR_ROUNDS}），请人类接管。"),
-        )
-        .await?;
-        return Ok("round cap reached".into());
+    let latest = latest_marker(&comments);
+    let round = latest.as_ref().map(|m| m.r).unwrap_or(0) + 1;
+    // Queue guard (spec 11 §6): the marker as the queue sees it. A self-trigger
+    // comment carries the round it just finished, so it claims the next one; a
+    // human instruction claims nothing and always gets to run.
+    let record = latest.map(|m| RoundRecord {
+        r: m.r,
+        sha: m.sha,
+        ..Default::default()
+    });
+    match precheck(round, MAX_PR_ROUNDS, ev.claimed_round(), record.as_ref()) {
+        // A newer run already completed this round: no comment, no commit, no
+        // self-trigger — the run leaves the PR exactly as it found it.
+        Some(Idle::StaleClaim) => return Ok("stale claim: nothing written".into()),
+        // The round cap is the fuse for the automatic chain; a maintainer's
+        // request may still start a round (spec 11 §6).
+        Some(_) if !round_allowed(round, human) => {
+            gh.create_issue_comment(
+                repo,
+                ev.number,
+                &format!("已达最大开发轮次（{MAX_PR_ROUNDS}），请人类接管。"),
+            )
+            .await?;
+            return Ok("round cap reached".into());
+        }
+        Some(_) | None => {}
     }
 
     let git = GitRepo::open(&cfg.workspace)?;
@@ -475,6 +535,19 @@ async fn pr_dev_round(
     // are on the remote, so nothing is ever overwritten (spec 11 §6).
     git.checkout_reset(branch, &format!("refs/remotes/devpush/{branch}"))
         .await?;
+
+    // Artifact gate: when the previous round recorded the commit it pushed, that
+    // commit must still be on the branch. A rewritten (force-pushed) branch would
+    // make this round stack work on a history that no longer exists, so stop here.
+    // Checked before the base merge: a rewritten history is not something to
+    // build on, and the merge would move HEAD and hide the problem.
+    if let Some(sha) = record.as_ref().and_then(|r| r.sha.as_deref())
+        && !git.is_ancestor(sha, "HEAD").await?
+    {
+        gh.create_issue_comment(repo, ev.number, Idle::PreviousNotOnBranch.message())
+            .await?;
+        return Ok(format!("previous commit {sha} is not on {branch}"));
+    }
 
     // Merge the base branch before developing. A branch that drifted behind its
     // base turns the pull request conflicted, and GitHub then runs no
@@ -542,17 +615,26 @@ async fn pr_dev_round(
         m: "impl".into(),
         r: round,
         pr: Some(ev.number),
+        sha: outcome.commit.clone(),
     };
     let head = if pushed {
         "本轮改动已提交并推送："
     } else {
         "本轮无代码改动。"
     };
+    // Queue status rides with the report so a human sees what is still pending
+    // or in flight without opening the queue command (spec 11 §6).
+    let queue = QueueState::latest(&comments).unwrap_or_default();
+    let queue_note = if queue.open_count() == 0 {
+        "队列已空".to_string()
+    } else {
+        summary_line(&queue)
+    };
     gh.create_issue_comment(
         repo,
         ev.number,
         &format!(
-            "{head}\n\n{}\n\n{}",
+            "{head}\n\n{}\n\n{queue_note}\n\n{}",
             crate::sanitize::model_text(&outcome.summary),
             marker_text(&marker)
         ),
@@ -560,9 +642,15 @@ async fn pr_dev_round(
     .await?;
 
     // Self-trigger the next round when the budget cut the loop short (spec 11 §6).
+    // The comment rides with this round's marker (first line stays the command),
+    // so the next run knows which round it is claiming.
     if outcome.budget_exhausted && round < MAX_PR_ROUNDS {
-        gh.create_issue_comment(repo, ev.number, "@hoverstare continue")
-            .await?;
+        gh.create_issue_comment(
+            repo,
+            ev.number,
+            &format!("@hoverstare continue\n\n{}", marker_text(&marker)),
+        )
+        .await?;
         return Ok(format!(
             "round {round} done; budget exhausted → self-triggered round {}",
             round + 1
@@ -583,6 +671,21 @@ async fn pr_dev_round(
     Ok(format!("round {round} done"))
 }
 
+/// `@hoverstare queue`: paste the visible queue checklist and carry the state
+/// forward as a new marker so the append-only chain stays consistent.
+async fn queue_flow(gh: &GitHubClient, repo: &Repo, ev: &DevEvent) -> anyhow::Result<String> {
+    let comments = gh.list_issue_comments(repo, ev.number).await?;
+    let queue = QueueState::latest(&comments).unwrap_or_default();
+    let body = if queue.items.is_empty() {
+        "队列已空".to_string()
+    } else {
+        format!("📋 队列状态：\n\n{}", checklist(&queue, &comments))
+    };
+    gh.create_issue_comment(repo, ev.number, &format!("{body}\n\n{}", queue.render()))
+        .await?;
+    Ok(format!("queue reported ({} item(s))", queue.items.len()))
+}
+
 /// `@hoverstare merge`: gate on open + mergeable + checks green, then squash.
 async fn merge_flow(
     cfg: &Config,
@@ -590,12 +693,36 @@ async fn merge_flow(
     repo: &Repo,
     ev: &DevEvent,
     pr: &PullRequest,
+    force: bool,
 ) -> anyhow::Result<String> {
     if pr.state.as_deref() != Some("open") {
         gh.create_issue_comment(repo, ev.number, "PR 未处于打开状态，无法合并。")
             .await?;
         return Ok("PR is not open".into());
     }
+    // Queue gate (spec 11 §6): never merge while queued work is unfinished —
+    // those instructions would be lost. Paste the outstanding items verbatim
+    // (`checklist`) so the refusal says what is left, not just that something is.
+    // A human `force` overrides the refusal, but the discard is reported aloud.
+    let comments = gh.list_issue_comments(repo, ev.number).await?;
+    let mut queue = QueueState::latest(&comments).unwrap_or_default();
+    let dropped = match merge_gate(&queue, force) {
+        MergeGate::Clear => 0,
+        MergeGate::Blocked => {
+            gh.create_issue_comment(
+                repo,
+                ev.number,
+                &format!(
+                    "队列仍有未完成项，拒绝合并；请先执行或清理队列\
+                     （确认丢弃可回复 `@hoverstare merge force`）：\n\n{}",
+                    checklist(&queue, &comments)
+                ),
+            )
+            .await?;
+            return Ok("refused: queue has unfinished items".into());
+        }
+        MergeGate::Forced { dropped } => dropped,
+    };
     // `mergeable` is computed lazily by GitHub; refetch once if unknown.
     let mut mergeable = pr.mergeable;
     if mergeable.is_none() {
@@ -645,14 +772,26 @@ async fn merge_flow(
         Ok(()) => format!("，源分支 `{}` 已删除", pr.head.ref_name),
         Err(e) => format!("（警告：源分支删除失败：{e}）"),
     };
+    // A forced merge throws the guarded instructions away: record them as dropped
+    // (append-only marker) so a later read no longer sees them as pending, and
+    // state the count in the confirmation so the discard is never silent.
+    let drop_note = if dropped > 0 {
+        let srcs: Vec<u64> = queue.outstanding().iter().map(|i| i.src).collect();
+        for src in srcs {
+            queue.set_state(src, ItemState::Dropped);
+        }
+        format!("\n\n已丢弃 {dropped} 条未完成项。\n\n{}", queue.render())
+    } else {
+        String::new()
+    };
     gh.create_issue_comment(
         repo,
         ev.number,
-        &format!("✅ 已合并（squash）：`{sha}`{branch_note}"),
+        &format!("✅ 已合并（squash）：`{sha}`{branch_note}{drop_note}"),
     )
     .await?;
     Ok(format!(
-        "merged: {sha}; branch deleted: {}",
+        "merged: {sha}; dropped {dropped} queued item(s); branch deleted: {}",
         pr.head.ref_name
     ))
 }
@@ -671,10 +810,13 @@ fn render_thread(title: &str, body: &str, comments: &[IssueComment]) -> String {
     };
     for c in tail {
         let body = c.body.as_deref().unwrap_or("");
-        // Skip the hidden markers to keep the context clean.
+        // Skip the hidden dev/queue markers to keep the context clean.
         let body = body
             .lines()
-            .filter(|l| !l.trim_start().starts_with(MARKER_PREFIX))
+            .filter(|l| {
+                let l = l.trim_start();
+                !l.starts_with(MARKER_PREFIX) && !l.starts_with(QUEUE_PREFIX)
+            })
             .collect::<Vec<_>>()
             .join("\n");
         out.push_str(&format!("\n**@{}:** {}\n", c.user.login, body));
@@ -733,7 +875,11 @@ mod tests {
         assert_eq!(parse_dev_command("@hoverstare go"), Some(DevCommand::Go));
         assert_eq!(
             parse_dev_command("@hoverstare merge"),
-            Some(DevCommand::Merge)
+            Some(DevCommand::Merge { force: false })
+        );
+        assert_eq!(
+            parse_dev_command("@hoverstare merge force"),
+            Some(DevCommand::Merge { force: true })
         );
         assert_eq!(
             parse_dev_command("@hoverstare add tests for calc.py"),
@@ -756,11 +902,75 @@ mod tests {
     }
 
     #[test]
+    fn parses_queue_command_case_and_spacing() {
+        // Command words are case-insensitive and tolerate extra whitespace.
+        assert_eq!(
+            parse_dev_command("@hoverstare queue"),
+            Some(DevCommand::Queue)
+        );
+        assert_eq!(
+            parse_dev_command("@hoverstare QUEUE"),
+            Some(DevCommand::Queue)
+        );
+        assert_eq!(
+            parse_dev_command("@hoverstare   Queue  "),
+            Some(DevCommand::Queue)
+        );
+        assert_eq!(
+            parse_dev_command("@hoverstare MERGE   FORCE"),
+            Some(DevCommand::Merge { force: true })
+        );
+        assert_eq!(
+            parse_dev_command("@hoverstare  merge"),
+            Some(DevCommand::Merge { force: false })
+        );
+    }
+
+    #[test]
+    fn uses_last_mention_with_fallback() {
+        // A command quoted in inline code followed by the real command: the
+        // trailing (last) mention is the one that is parsed.
+        assert_eq!(
+            parse_dev_command("之前我用了 `@hoverstare go`，现在 @hoverstare merge"),
+            Some(DevCommand::Merge { force: false })
+        );
+        // Two free-standing mentions -> the newest instruction wins.
+        assert_eq!(
+            parse_dev_command("@hoverstare go ... actually @hoverstare add tests"),
+            Some(DevCommand::Task("add tests".into()))
+        );
+        // A bare trailing mention carries no command -> fall back to the
+        // previous mention that does.
+        assert_eq!(
+            parse_dev_command("@hoverstare merge\n\n@hoverstare"),
+            Some(DevCommand::Merge { force: false })
+        );
+    }
+
+    #[test]
+    fn unpaired_backtick_does_not_hide_the_command() {
+        // Odd number of backticks: the stray one must not swallow the rest.
+        let body = "说明里有一个落单的反引号 ` 然后 @hoverstare go";
+        assert_eq!(parse_dev_command(body), Some(DevCommand::Go));
+        // The text after the stray backtick is preserved, not discarded.
+        assert!(strip_code_blocks(body).contains("然后 @hoverstare go"));
+
+        // No command anywhere -> None.
+        assert_eq!(parse_dev_command("just a normal comment"), None);
+        // A mention inside a fenced block is not a command.
+        assert_eq!(
+            parse_dev_command("示例：\n```\n@hoverstare go\n```\n没有命令"),
+            None
+        );
+    }
+
+    #[test]
     fn marker_roundtrip_and_latest() {
         let m = DevMarker {
             m: "plan".into(),
             r: 2,
             pr: None,
+            sha: Some("c0ffee".into()),
         };
         let text = marker_text(&m);
         assert_eq!(parse_marker(&format!("reply body\n\n{text}")), Some(m));
@@ -771,6 +981,7 @@ mod tests {
                     m: "plan".into(),
                     r: 1,
                     pr: None,
+                    sha: None,
                 }),
             ),
             comment(2, "plain reply"),
@@ -780,6 +991,7 @@ mod tests {
                     m: "impl".into(),
                     r: 0,
                     pr: Some(7),
+                    sha: None,
                 }),
             ),
         ];
@@ -819,7 +1031,8 @@ mod tests {
                 marker_text(&DevMarker {
                     m: "plan".into(),
                     r: 9,
-                    pr: None
+                    pr: None,
+                    sha: None
                 })
             ),
         ));
@@ -829,5 +1042,16 @@ mod tests {
         assert!(!out.contains("msg 0"));
         assert!(out.contains("msg 39"));
         assert!(!out.contains("hoverstare-dev:"), "markers stripped");
+    }
+
+    #[test]
+    fn thread_render_strips_queue_markers() {
+        let comments = vec![comment(
+            7,
+            &format!("please do it\n\n{}", QueueState::new().render()),
+        )];
+        let out = render_thread("T", "body", &comments);
+        assert!(out.contains("please do it"));
+        assert!(!out.contains(QUEUE_PREFIX), "queue marker stripped");
     }
 }

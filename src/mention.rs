@@ -64,15 +64,32 @@ pub(crate) fn strip_code_blocks(body: &str) -> String {
             out.push('\n');
         }
     }
+    strip_inline_code(&out)
+}
+
+/// Strip `inline code` spans. Only backticks that pair up delimit a span: an
+/// *unpaired* backtick is kept as an ordinary character so a single stray
+/// backtick never swallows the rest of the comment (issue #15). The old
+/// toggle-based version flipped `in_tick` on every backtick, so an odd count
+/// discarded all the text after the last one — dropping the real command.
+fn strip_inline_code(body: &str) -> String {
+    let chars: Vec<char> = body.chars().collect();
     let mut res = String::new();
-    let mut in_tick = false;
-    for c in out.chars() {
-        if c == '`' {
-            in_tick = !in_tick;
-            continue;
-        }
-        if !in_tick {
-            res.push(c);
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == '`' {
+            match chars[i + 1..].iter().position(|&c| c == '`') {
+                // Paired: drop the span together with both backticks.
+                Some(offset) => i += offset + 2,
+                // Unpaired: keep the backtick and continue (never drop text).
+                None => {
+                    res.push('`');
+                    i += 1;
+                }
+            }
+        } else {
+            res.push(chars[i]);
+            i += 1;
         }
     }
     res
@@ -498,6 +515,23 @@ mod tests {
         // normal response outside code blocks
         assert_eq!(
             parse_command("```\nsome code\n```\n@hoverstare review"),
+            Some(MentionCommand::Review)
+        );
+    }
+
+    #[test]
+    fn unpaired_backtick_does_not_swallow_text() {
+        // A single stray backtick must not hide the command after it (issue
+        // #15): the unpaired backtick stays as ordinary text.
+        assert_eq!(
+            parse_command("说明里有一个落单的反引号 ` 然后 @hoverstare review"),
+            Some(MentionCommand::Review)
+        );
+        // Text after the stray backtick is preserved, not dropped.
+        assert!(strip_code_blocks("stray ` then text").contains("then text"));
+        // Quoted command plus a real trailing one still resolves the real one.
+        assert_eq!(
+            parse_command("之前 `@hoverstare explain` 过，现在 @hoverstare review"),
             Some(MentionCommand::Review)
         );
     }

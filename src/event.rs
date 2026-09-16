@@ -230,8 +230,22 @@ impl DevEvent {
     /// Self-trigger gate (spec 11 §6): the bot's own `@hoverstare continue`
     /// is allowed even though the bot is not a collaborator; everything else
     /// from non-collaborators is ignored.
+    ///
+    /// Compared on the **first line** so the self-driving queue can ride along
+    /// in the hidden markers below it (the workflow's `startsWith` gate stays
+    /// satisfied that way).
     pub fn is_self_trigger(&self) -> bool {
-        self.author == "hoverstare[bot]" && self.body.trim() == "@hoverstare continue"
+        self.author == "hoverstare[bot]"
+            && self.body.lines().next().map(str::trim) == Some("@hoverstare continue")
+    }
+
+    /// Rounds claimed by this comment (self-trigger only): the marker records
+    /// the round the bot just finished, so it claims the next one.
+    pub fn claimed_round(&self) -> Option<u32> {
+        if !self.is_self_trigger() {
+            return None;
+        }
+        crate::devagent::parse_marker(&self.body).map(|m| m.r + 1)
     }
 }
 
