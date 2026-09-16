@@ -400,7 +400,8 @@ async fn do_explain(
                 .await?;
         }
         None => {
-            gh.create_issue_comment(repo, ev.pr_number, &body).await?;
+            gh.create_issue_comment(repo, ev.pr_number, &crate::sanitize::model_text(&body))
+                .await?;
         }
     }
     Ok("explain replied".to_string())

@@ -259,7 +259,11 @@ async fn discuss_round(
     gh.create_issue_comment(
         repo,
         ev.number,
-        &format!("{reply}\n\n{}", marker_text(&marker)),
+        &format!(
+            "{}\n\n{}",
+            crate::sanitize::model_text(reply),
+            marker_text(&marker)
+        ),
     )
     .await?;
     Ok(format!("discuss round {round} replied"))
@@ -343,9 +347,12 @@ async fn implement_issue(
         return Ok("no changes; PR not created".into());
     }
     git.push("devpush", &branch).await?;
+    // Untrusted model text: markup that failed as a tool call must not become a
+    // pull request body, where humans read it and later rounds inherit it.
+    let summary = crate::sanitize::model_text(&outcome.summary);
     let pr_body = format!(
         "{}\n\nCloses #{}\n\n---\n由 HoverStare 实现。后续调整请在 PR 评论区 `@hoverstare` 下达。",
-        outcome.summary, ev.number
+        summary, ev.number
     );
     let pr = gh
         .create_pull_request(
@@ -481,7 +488,11 @@ async fn pr_dev_round(
     gh.create_issue_comment(
         repo,
         ev.number,
-        &format!("{head}\n\n{}\n\n{}", outcome.summary, marker_text(&marker)),
+        &format!(
+            "{head}\n\n{}\n\n{}",
+            crate::sanitize::model_text(&outcome.summary),
+            marker_text(&marker)
+        ),
     )
     .await?;
 
