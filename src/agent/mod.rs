@@ -130,6 +130,10 @@ pub struct ChatReply {
     pub text: String,
     pub tool_calls: Vec<ToolCall>,
     pub usage: Usage,
+    /// Whether the provider returned reasoning for this answer. A thinking
+    /// model that answers only in its reasoning channel reaches us as an empty
+    /// reply, and this is the only way to tell that apart from a real silence.
+    pub had_reasoning: bool,
 }
 
 /// The provider seam. Implementations must not leak provider types through it.

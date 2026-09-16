@@ -115,7 +115,11 @@ fn map_completion_error(error: CompletionError) -> AgentError {
 fn convert_reply<T>(response: rig::completion::CompletionResponse<T>) -> ChatReply {
     let mut text = String::new();
     let mut tool_calls = Vec::new();
+    let mut had_reasoning = false;
     for content in response.choice.iter() {
+        if matches!(content, AssistantContent::Reasoning(_)) {
+            had_reasoning = true;
+        }
         match content {
             AssistantContent::Text(value) => {
                 if !text.is_empty() {
@@ -134,6 +138,7 @@ fn convert_reply<T>(response: rig::completion::CompletionResponse<T>) -> ChatRep
     ChatReply {
         text,
         tool_calls,
+        had_reasoning,
         usage: Usage {
             input_tokens: response.usage.input_tokens,
             output_tokens: response.usage.output_tokens,

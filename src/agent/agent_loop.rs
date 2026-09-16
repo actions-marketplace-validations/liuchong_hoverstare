@@ -28,6 +28,14 @@ use crate::agent::{
 /// Output limit per model call.
 const MAX_OUTPUT_TOKENS: u64 = 8192;
 
+/// How many empty answers in a row are tolerated before the run fails.
+///
+/// An empty reply is a real provider failure mode, not an exception: a
+/// thinking model can answer only in its reasoning channel, and a transport can
+/// hand back nothing at all. Each retry nudges the model to answer, and the
+/// bound keeps a silent model from burning the run.
+const EMPTY_REPLY_ATTEMPTS: u32 = 3;
+
 /// Hard stop on model calls when a caller configured no round limit.
 const DEFAULT_MAX_ROUNDS_MARGIN: u32 = 2;
 
@@ -298,6 +306,7 @@ impl AgentLoop {
             // a path, the ledger cannot.
             let mut ledger = WorkLedger::from_items(&items);
             let mut rounds = 0u32;
+            let mut empty_replies = 0u32;
             let max_rounds = self.round_budget(req.budget.max_tool_calls);
             // Signature -> result of the last execution. A model that repeats a
             // call whose result cannot change would otherwise spend the budget
@@ -375,6 +384,29 @@ impl AgentLoop {
                     Ok(reply) => {
                         usage.add(reply.usage);
                         if reply.tool_calls.is_empty() {
+                            if reply.text.trim().is_empty() {
+                                empty_replies += 1;
+                                if empty_replies >= EMPTY_REPLY_ATTEMPTS {
+                                    break Err(AgentError::Backend(format!(
+                                        "model returned an empty reply {empty_replies} times{}",
+                                        if reply.had_reasoning {
+                                            " (it produced reasoning but no answer)"
+                                        } else {
+                                            ""
+                                        }
+                                    )));
+                                }
+                                warn!(
+                                    "empty model reply ({empty_replies}/{EMPTY_REPLY_ATTEMPTS}, reasoning={}); asking again",
+                                    reply.had_reasoning
+                                );
+                                items.push(ConversationItem::User {
+                                    text: "[note] your previous reply was empty. Answer now with \
+                                           the required output and nothing else."
+                                        .to_string(),
+                                });
+                                continue;
+                            }
                             break Ok((reply.text, trace, usage));
                         }
                         if menu.is_empty() {
@@ -669,6 +701,7 @@ mod tests {
                 arguments,
             }],
             usage: Usage::default(),
+            had_reasoning: false,
         }
     }
 
@@ -1048,6 +1081,47 @@ mod tests {
         // instead of hanging: bounded, and it says why.
         assert!(
             matches!(result, Err(AgentError::Backend(message)) if message.contains("round budget"))
+        );
+    }
+
+    #[tokio::test]
+    async fn an_empty_reply_is_asked_again_before_the_run_fails() {
+        let (_dir, shared) = two_file_workspace();
+        let counter = Arc::new(AtomicUsize::new(0));
+        let client = ScriptedClient::new(vec![scripted(|_index, _call| Ok(reply("")))]);
+        let result = loop_with(client.clone(), 100_000)
+            .review(request(Some(shared), 8))
+            .await;
+        assert!(
+            matches!(result, Err(AgentError::Backend(message)) if message.contains("empty reply"))
+        );
+        // Bounded: the initial call plus the tolerated retries.
+        assert_eq!(client.calls().len() as u32, EMPTY_REPLY_ATTEMPTS);
+    }
+
+    #[tokio::test]
+    async fn an_empty_reply_then_an_answer_still_completes_the_run() {
+        let (_dir, shared) = two_file_workspace();
+        let counter = Arc::new(AtomicUsize::new(0));
+        let client = ScriptedClient::new(vec![scripted(move |_index, _call| {
+            if counter.fetch_add(1, Ordering::SeqCst) == 0 {
+                return Ok(reply("   "));
+            }
+            Ok(reply("final"))
+        })]);
+        let run = loop_with(client.clone(), 100_000)
+            .review(request(Some(shared), 8))
+            .await
+            .unwrap();
+        assert_eq!(run.raw_output, "final");
+        // The nudge reached the model on the retry.
+        let second = &client.calls()[1];
+        assert!(
+            second.messages.iter().any(|item| matches!(
+                item,
+                ConversationItem::User { text } if text.contains("previous reply was empty")
+            )),
+            "the retry asks the model to answer"
         );
     }
 
