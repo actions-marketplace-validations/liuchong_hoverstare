@@ -227,6 +227,47 @@ jobs:
           app-id: ${{ secrets.HOVERSTARE_APP_ID }}
           private-key: ${{ secrets.HOVERSTARE_APP_PRIVATE_KEY }}
 
+      # 开发轮的提交必须签名。CI 上没有本机的 GPG 配置，不配置就会静默产出未签名提交
+      # （`git log --format=%G?` = N）。需要 secret：HOVERSTARE_GPG_PRIVATE_KEY（armored
+      # 私钥）与可选 HOVERSTARE_GPG_PASSPHRASE。导入后先做一次空提交自检，签不出来就红。
+      - name: Configure commit signing
+        if: secrets.HOVERSTARE_GPG_PRIVATE_KEY != ''
+        shell: bash
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.HOVERSTARE_GPG_PRIVATE_KEY }}
+          GPG_PASSPHRASE: ${{ secrets.HOVERSTARE_GPG_PASSPHRASE }}
+        run: |
+          set -euo pipefail
+          export GNUPGHOME="$RUNNER_TEMP/gnupg"
+          mkdir -p "$GNUPGHOME"
+          chmod 700 "$GNUPGHOME"
+          printf '%s' "$GPG_PRIVATE_KEY" | gpg --batch --quiet --import
+          key_id=$(gpg --list-secret-keys --with-colons | awk -F: '/^sec:/ {print $5; exit}')
+          if [ -z "$key_id" ]; then
+            echo "::error::HOVERSTARE_GPG_PRIVATE_KEY imported no secret key material"
+            exit 1
+          fi
+          git config --global user.signingkey "$key_id"
+          if [ -n "$GPG_PASSPHRASE" ]; then
+            printf '%s' "$GPG_PASSPHRASE" > "$RUNNER_TEMP/gpg-passphrase"
+            chmod 600 "$RUNNER_TEMP/gpg-passphrase"
+            printf '%s\n' '#!/bin/sh' 'exec gpg --pinentry-mode loopback --passphrase-file "$GPG_PASSPHRASE_FILE" "$@"' > "$RUNNER_TEMP/gpg-loopback"
+            chmod +x "$RUNNER_TEMP/gpg-loopback"
+            git config --global gpg.program "$RUNNER_TEMP/gpg-loopback"
+          fi
+          git config --global commit.gpgsign true
+          echo "GNUPGHOME=$GNUPGHOME" >> "$GITHUB_ENV"
+          echo "GPG_PASSPHRASE_FILE=$RUNNER_TEMP/gpg-passphrase" >> "$GITHUB_ENV"
+          # 自检：空提交必须签得出来，否则本轮之后所有提交都会静默未签名。
+          git -c user.name=check -c user.email=check@example.invalid commit --allow-empty -q -m "signing self-check"
+          status=$(git log -1 --format=%G?)
+          git reset -q --hard HEAD~1
+          if [ "$status" != "G" ] && [ "$status" != "U" ]; then
+            echo "::error::commit signing self-check failed (status=$status); refusing to run unsigned"
+            exit 1
+          fi
+          echo "::notice::commit signing ready (key $key_id, status $status)"
+
       # 路由（spec 09/11）：pull_request -> review；纯 issue -> develop；
       # PR 评论 review|explain|help|空 -> mention；其余 -> develop
       - name: Run hoverstare

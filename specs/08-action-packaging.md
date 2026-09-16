@@ -125,7 +125,18 @@ inputs：
     **这里只接受 `master` 或 release tag（`vX.Y.Z`）**——任何能开 PR 的人都能写这个标记，
     而 workflow 持有写权限，不能允许它指着一份别人控制的代码去构建运行。
   - pin 只改变**二进制的来源**：工作区仍是被处理的那份代码，`show_base_file`、工具沙箱、
-    push 目标都不受影响；pin 构建在独立 worktree 里进行，因此那一次构建是冷编译（约 3 分钟）。
+    push 目标都不受影响；pin 构建在独立 worktree 里进行，并按 **pin 的 commit** 单独缓存，
+    因此一个流程只有第一轮付冷编译（约 3 分钟），后续轮命中缓存。
+- **流程级 pin**：流程（issue → `go` → PR）开始时，harness 把当时默认分支的 revision 以隐藏标记
+  `hoverstare-pin: <sha>` 写进 PR body；该流程后续每一轮都构建这个 revision，master 前进不会
+  让流程中途换代码，也不会因此每轮重建。标记接受的 ref：`master`、release tag（`vX.Y.Z`）、
+  或**可从默认分支到达的 commit**；分支名一律拒绝（任何能开 PR 的人都能写标记，而 workflow 有写权限）。
+  手工覆盖仍可用 `hoverstare-pin: master` 或手动触发的 `version` 输入。
+- **提交签名**：开发轮的提交必须签名。CI 上导入 `HOVERSTARE_GPG_PRIVATE_KEY`（armored 私钥）
+  与可选 `HOVERSTARE_GPG_PASSPHRASE` 后设置 `user.signingkey` + `commit.gpgsign=true`，并在导入后
+  做一次空提交自检（签不出来直接失败，避免静默产出未签名提交）。未配置 secret 时该步骤跳过，
+  行为与之前一致（提交为未签名）。本地 `hoverstare develop --task` 走本机 git 配置，同样受
+  `commit.gpgsign` 约束。
 
 ## 测试要点
 
