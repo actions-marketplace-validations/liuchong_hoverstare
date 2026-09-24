@@ -861,3 +861,91 @@ async fn team_membership_miss() {
             .await
     );
 }
+
+/// T17.9（spec 14 §4）：分析区失败时覆盖声明必须可见——失败不再只说"失败"。
+///
+/// 覆盖计数落在状态检查描述里（fail-open 下不会有评论，状态检查是唯一载体），
+/// 因此这条测试同时锁住三件事：分析失败仍然 fail-open（exit 0 语义）、
+/// 分母在派发前冻结（1 个单元）、失败注记带 `coverage 0/1` 而不是一句空泛的失败。
+#[tokio::test]
+async fn analysis_failure_status_check_states_coverage() {
+    let _guard = ENV_LOCK.lock().await;
+    let server = MockServer::start_async().await;
+
+    // diff 请求（Accept: v3.diff）——更具体的 mock 先注册，JSON 请求会落到下一个
+    server
+        .mock_async(|when, then| {
+            when.method(GET)
+                .path("/repos/o/r/pulls/1")
+                .header("accept", "application/vnd.github.v3.diff");
+            then.status(200)
+                .body("diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n-x\n+y\n");
+        })
+        .await;
+
+    server
+        .mock_async(|when, then| {
+            when.method(GET).path("/repos/o/r/pulls/1");
+            then.status(200).json_body(serde_json::json!({
+                "number": 1,
+                "head": {"sha": "abc123", "ref": "feat"},
+                "base": {"sha": "def456", "ref": "main"},
+                "draft": false,
+                "user": {"login": "dev"},
+                "author_association": "OWNER"
+            }));
+        })
+        .await;
+
+    // 历史 review 列表为空 → 全量模式
+    server
+        .mock_async(|when, then| {
+            when.method(GET).path("/repos/o/r/pulls/1/reviews");
+            then.status(200).json_body(serde_json::json!([]));
+        })
+        .await;
+
+    let status_mock = server
+        .mock_async(|when, then| {
+            when.method(POST)
+                .path("/repos/o/r/statuses/abc123")
+                .body_includes(r#""context":"hoverstare""#)
+                .body_includes("coverage 0/1")
+                .body_includes("analysis failed (fail-open)");
+            then.status(200).json_body(serde_json::json!({"id": 1}));
+        })
+        .await;
+
+    unsafe {
+        std::env::set_var("GITHUB_API_URL", server.base_url());
+        // 模型端点指向没有监听者的端口：每个 pass 必然失败，且不产生真实调用
+        std::env::set_var("OPENAI_BASE_URL", "http://127.0.0.1:1/v1");
+    }
+
+    let outcome = hoverstare::orchestrator::run_review(
+        &cfg_with_status_checks(true),
+        &hoverstare::cli::ReviewArgs {
+            pr: Some(1),
+            repo: Some("o/r".into()),
+            ..Default::default()
+        },
+        false,
+    )
+    .await
+    .unwrap();
+
+    assert!(
+        matches!(
+            outcome,
+            hoverstare::orchestrator::Outcome::AnalysisFailed(_)
+        ),
+        "analysis failure must stay fail-open"
+    );
+    status_mock.assert_async().await;
+
+    // Leave the environment as we found it: this test is the only one that
+    // redirects the model endpoint.
+    unsafe {
+        std::env::remove_var("OPENAI_BASE_URL");
+    }
+}
