@@ -30,6 +30,10 @@ agentic 审查，把高置信度缺陷以行内评论发到 PR 上并跨 commit 
 | （并入 11）自驱动队列 | 任务队列状态机、claim 守卫、artifact gate、合并队列门、`queue` 命令 | M15 |
 | （并入 11/08/01）提交身份与签名、流程级 pin | coauthor/author/bot、GPG 签名、流程起始 revision 固定 | M16 |
 | [13-context-compaction.md](13-context-compaction.md) | agentic 循环的上下文压缩：阈值压缩 + 溢出恢复（自持 history） | — |
+| [14-review-unit.md](14-review-unit.md) | 审查单元与覆盖契约：确定性选择、零成本预览、覆盖账本 | M17 |
+| [15-rule-packs.md](15-rule-packs.md) | 语言规则包：按路径命中的检查要点、注入契约、`rules check` 自检 | M18 |
+| [16-output-contract.md](16-output-contract.md) | 输出契约：JSON 与 SARIF 结构化出口 | M19 |
+| [17-verification-gates.md](17-verification-gates.md) | 工程门禁：引用 pin、文档结构、依赖审计、覆盖率、密钥扫描 | M20 |
 | [validation-2026-07-18.md](validation-2026-07-18.md) | 真实环境端到端验证记录 | — |
 
 ## 里程碑计划
@@ -277,6 +281,56 @@ agentic 审查，把高置信度缺陷以行内评论发到 PR 上并跨 commit 
 `Build (pinned revision)` 成功且事件版本被跳过；bot 产出的提交 `author`/`committer` 均为维护者、
 签名通过且 GitHub 侧 `verified=true`。
 
+### M17 — 审查单元与覆盖契约（计划中）
+
+**目标**：把"答应了审什么 / 实际审了什么"变成机器可核对的账，而不是模型的自觉。
+
+- [ ] ReviewUnit 抽象与确定性成组（`group_units`，默认关）
+- [ ] 选择收敛为纯函数 + 排除原因枚举（预览与运行同源）
+- [ ] `hoverstare review --preview`：零模型调用输出 will_review / excluded
+- [ ] 覆盖账本：分母冻结、单元状态机、终态 ok/partial/empty
+- [ ] 摘要与轮次报告呈现覆盖声明（`report_coverage`，默认开）
+
+**验收**：见 [spec 14 §10](14-review-unit.md)。
+
+### M18 — 语言规则包（计划中）
+
+**目标**：每份改动只注入与它相关的检查要点。
+
+- [ ] 规则包数据形态（id/version/scope/checks/examples）+ schema 校验单测
+- [ ] 匹配解析：first match wins、专指性排序、歧义嗅探与回退、多包上限
+- [ ] `[LANGUAGE RULES]` 注入契约（字节上限、不与核心规则/仓库指令冲突）
+- [ ] `hoverstare rules list` / `rules check <path>` 只读自检
+- [ ] 初始包：rust / go / ts-js / python / ci-yaml / default（含正反样例）
+
+**验收**：见 [spec 15 §12](15-rule-packs.md)。
+
+### M19 — 输出契约（计划中）
+
+**目标**：同一份结果既有评论出口，也有可供下游消费的结构化出口。
+
+- [ ] `--format human|json|sarif` + `--output`（stdout 纯净，日志走 stderr）
+- [ ] JSON 契约（schema_version / run / units / findings / resolutions，稳定排序）
+- [ ] SARIF 2.1.0 映射（级别、region、partialFingerprints、fixes、invocations）
+- [ ] 无法锚定的 finding 以文件级结果进入 SARIF（不污染评论）
+- [ ] 安全：输出不含凭据、原始 prompt、绝对路径
+
+**验收**：见 [spec 16 §10](16-output-contract.md)。
+
+### M20 — 工程门禁（计划中）
+
+**目标**：把纪律变成机器门禁（本地一条命令、CI 阻塞）。
+
+- [ ] `scripts/verify-action-pins.sh`（G1）+ 一次性把 action/workflow 引用全部 pin 到 SHA
+- [ ] `scripts/check-doc-structure.sh`（G2）+ 六份 README 结构对齐
+- [ ] `cargo deny` / `cargo audit`（G3）与 `deny.toml` 白名单
+- [ ] 覆盖率基线（G4）与不劣化判定
+- [ ] 密钥扫描（G5）+ 平台推送保护；actionlint 覆盖门禁脚本自身（G6）
+- [ ] spec 与模块一致性检查（G7）；`scripts/verify-all.sh` 汇总；CI 接线
+
+**验收**：见 [spec 17 §7](17-verification-gates.md)。
+
+
 ## 测试策略
 
 | 层 | 方法 |
@@ -292,3 +346,4 @@ agentic 审查，把高置信度缺陷以行内评论发到 PR 上并跨 commit 
 - 错误处理：库代码用 `thiserror`，bin 用 `anyhow`；禁止 `unwrap()`（测试除外）
 - 日志用 `tracing`；机密一律 `secrecy::SecretString`，禁止出现在日志
 - 每个 spec 对应 `src/` 下同名模块；新增模块先补 spec
+- 工程门禁（引用 pin、文档结构、依赖审计、覆盖率、密钥扫描）见 spec 17：本地 `scripts/verify-all.sh`，CI 阻塞

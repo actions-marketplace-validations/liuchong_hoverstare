@@ -19,6 +19,11 @@ HoverStare 是一个 Rust 编写的仓库 agent，以 GitHub Action 形态分发
 两条主线共用同一套 agent 循环与工具沙箱，唯一区别是**工具 profile**：审查永远只读，
 开发模式额外拿到写工具（spec 04 / spec 11）。
 
+GitHub Action 是**最典型的接入形态**，不是唯一的形态：审查单位（spec 14）、语言规则包
+（spec 15）、输出契约（spec 16）都不依赖平台事件，同一套核心可以被本地 CLI、serve、
+以及后续接入的其它平台/形态复用。因此新能力一律按"形态无关的核心 + 形态适配层"来设计，
+避免把能力写死在某个平台的 API 形状里。
+
 ## 核心能力
 
 | 能力 | 说明 | spec |
@@ -37,6 +42,10 @@ HoverStare 是一个 Rust 编写的仓库 agent，以 GitHub Action 形态分发
 | 细粒度权限 | `.github/hoverstare.toml` 声明谁能用哪条命令（login / association） | [12](../specs/12-permissions.md) |
 | 上下文压缩 | 阈值压缩 + 溢出恢复，前缀缓存友好（只追加、只压中段） | [13](../specs/13-context-compaction.md) |
 | fail-open | 分析失败不阻塞 CI；仅配置错误与发布彻底失败才 exit 1 | [01](../specs/01-cli-config.md) |
+| 覆盖契约 | 审查单元 + 确定性选择 + 零成本预览 + 覆盖账本（承诺集合 vs 实际集合） | [14](../specs/14-review-unit.md) |
+| 语言规则包 | 按路径/扩展名命中的检查要点，注入与自检（`rules check`） | [15](../specs/15-rule-packs.md) |
+| 结构化输出 | JSON 与 SARIF 出口，供 CI/安全面板/编辑器/其它 agent 消费 | [16](../specs/16-output-contract.md) |
+| 工程门禁 | 引用 pin、文档结构、依赖审计、覆盖率、密钥扫描 | [17](../specs/17-verification-gates.md) |
 
 ## 架构
 
@@ -89,6 +98,19 @@ HoverStare 是一个 Rust 编写的仓库 agent，以 GitHub Action 形态分发
 9. **流程级 pin**：一个流程（issue → go → PR）开始时记录当时的默认分支 revision，
    后续每一轮都构建该 revision（并按该 commit 缓存），避免 master 前进导致流程中途
    换代码与每轮重建；指令标记只接受 master / release tag / 可从默认分支到达的 commit。
+10. **审查单元是形态无关的核心单位（spec 14）**：并发、上下文隔离、覆盖分母、报告聚合
+    都以审查单元计；选择逻辑收敛成一个纯函数，预览与真实运行同源（两处各算一遍必然漂移）。
+    "答应了审什么"必须由机器记账，不能靠模型自觉。
+11. **规则按文件命中，而不是全量塞提示（spec 15）**：语言规则包只把与当前文件相关的
+    检查要点注入进去；它与多 pass 视角**正交**（不是第四路 pass），权威低于核心规则与
+    仓库指令，且随二进制内置（不新增外部输入面）。
+12. **对下游要有稳定出口（spec 16）**：评论是给人看的出口，JSON/SARIF 是给机器看的出口；
+    两者共享同一份 findings 数据模型，路径/排序/枚举封闭，凭据与原始 prompt 绝不出现在输出里。
+13. **纪律要机器化（spec 17）**：引用 pin、文档结构对齐、依赖审计、覆盖率不劣化、密钥扫描
+    全部做成门禁（本地一条命令、CI 阻塞）；门禁失败属工程问题，**不进入 fail-open 区间**。
+14. **威胁模型与设计同级（docs/threat-model.md）**：新增形态、凭据种类、写能力或外部输入
+    来源时，必须同步更新威胁模型；涉及凭据、写操作、路径沙箱、提示注入面的改动要在 PR 里
+    显式引用对应小节。
 
 ## 配置一览（`.github/hoverstare.toml`，全部可选）
 
@@ -148,7 +170,11 @@ merge = ["write"]
 | M14 | 细粒度权限（`.github/hoverstare.toml` `[permissions]`） | ✅ |
 | M15 | 自驱动队列：严格串行、失败即停、合并门与 `queue` 命令 | ✅ |
 | M16 | 提交身份与签名、流程级 pin、上下文压缩与缓存可观测 | ✅ |
+| M17 | 审查单元与覆盖契约：确定性选择、零成本预览、覆盖账本（spec 14） | ⏳ 计划中 |
+| M18 | 语言规则包：按路径命中、注入契约、`rules check`（spec 15） | ⏳ 计划中 |
+| M19 | 输出契约：JSON 与 SARIF 出口（spec 16） | ⏳ 计划中 |
+| M20 | 工程门禁：引用 pin、文档结构、依赖审计、覆盖率、密钥扫描（spec 17） | ⏳ 计划中 |
 
-**当前状态**：M1-M16 全部完成；`cargo test --workspace` 214 项（单元 + httpmock 合约），
+**当前状态**：M1-M16 全部完成；M17-M20 的 spec 已定稿（实现待做，见 [specs](../specs/README.md#里程碑计划)）。`cargo test --workspace` 214 项（单元 + httpmock 合约），
 `cargo clippy --all-targets -D warnings` 与 `cargo fmt --check` 干净，CI 另跑
 actionlint（workflow 文件本身的有效性）。
