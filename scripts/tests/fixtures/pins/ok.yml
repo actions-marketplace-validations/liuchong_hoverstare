@@ -11,3 +11,6 @@ jobs:
       - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
       - uses: ./local-action
       - uses: liuchong/hoverstare@0123456789abcdef0123456789abcdef01234567 # v0.1.1
+      # Upstreams without version tags are pinned to the commit a branch pointed
+      # at; the comment names that ref (single token).
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable

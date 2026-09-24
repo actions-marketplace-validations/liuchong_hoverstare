@@ -19,7 +19,7 @@
 
 | 编号 | 门禁 | 判据 | 失败语义 |
 |---|---|---|---|
-| G1 | 引用 pin | `action.yml` 与 `.github/workflows/*.yml` 中每个外部 `uses:` 都是 40 位 commit SHA + `# vX.Y.Z` 注释 | 阻塞 |
+| G1 | 引用 pin | `action.yml` 与 `.github/workflows/*.yml` 中每个外部 `uses:` 都是 40 位 commit SHA + **单 token 来源注释**（`# vX.Y.Z`；上游只有分支引用时用分支名，如 `# stable`） | 阻塞 |
 | G2 | 文档结构对齐 | 六份 README 的二级标题**结构**一致（数量 + 层级序列，不比文字） | 阻塞 |
 | G3 | 依赖与许可审计 | 无已知安全公告；依赖许可在白名单内 | 阻塞 |
 | G4 | 覆盖率不劣化 | 总行覆盖率不低于仓库内基线，且不大于基线以下 0.5 个百分点 | 阻塞 |
@@ -29,8 +29,14 @@
 
 ### G1 引用 pin（`scripts/verify-action-pins.sh`）
 
-- 只接受"整行都是 pin 引用"：`uses:` + `owner/repo@<40 hex>` + `# vX.Y.Z`，
-  其它写法（引号、flow 映射、多余尾注）一律判为不合规（宁可失败也不要猜）；
+- 只接受"整行都是 pin 引用"：`uses:` + `owner/repo@<40 hex>` + 一个来源注释 token，
+  其它写法（引号、flow 映射、多余尾注、多 token 注释）一律判为不合规（宁可失败也不要猜）；
+- **注释 token 的两种合法形态**：`vX.Y.Z`（有版本标签的上游）或标识符（分支名 / 三段版本号，
+  如 `stable`、`1.83.0`）。**裸大版本如 `# v4` 仍然拒绝**——它无法说明 pin 的是哪个发布，
+  这正是"看似 pin 住、实则含糊"的写法。注释只是来源记录，**pin 的是 SHA**；
+- 为什么允许分支名：有些上游没有版本标签（`dtolnay/rust-toolchain` 用分支引用发布），
+  对它只能 pin 到分支当时的 commit。注意这类 action 的语义来自 ref：pin 到 SHA 后必须显式
+  传 `with: toolchain: …`，否则它无法判断要装哪个工具链；
 - 本地引用（`./…`）豁免；
 - **理由（针对本仓库的事实）**：`action.yml` 是对外发布的 composite action，
   使用者用 commit SHA pin 住我们之后，内层浮动 tag 仍会改变实际执行的代码；
@@ -115,7 +121,8 @@ scripts/tests/test-gates.sh            # 门禁自身的自测（正例/反例 f
 
 ## 4. 落地时必须一并完成的事（M20 交付内容）
 
-1. 把 `action.yml` 与四个 workflow 里的浮动引用改为 40 位 SHA + 版本注释；
+1. ✅ 已完成：`action.yml` 与四个 workflow 里的 15 处浮动引用改为 40 位 SHA + 来源注释
+   （同主版本的最新补丁，不是顺手升大版本——升级是独立决定，流程写在 CONTRIBUTING）；
 2. 六份 README 结构对齐（G2 的起始状态）；
 3. 写入覆盖率基线文件；
 4. 开启平台侧密钥推送保护与 gitleaks 配置；

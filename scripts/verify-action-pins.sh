@@ -42,10 +42,15 @@ fi
 # land on the check and fail closed instead of being silently skipped.
 directive='^[[:space:]]*(-[[:space:]]+)?(\{[[:space:]]*)?["'\'']?uses["'\'']?[[:space:]]*:'
 # The only accepted form: optional list dash, `uses:`, owner/repo@<40 hex>, and a
-# strict trailing "# vX.Y.Z" comment with nothing after it. Anything unusual
-# (quotes, flow mappings, short SHAs, a "# v7" comment, trailing text) fails
-# closed instead of being guessed at.
-pinned='^[[:space:]]*(-[[:space:]]+)?uses:[[:space:]]+[A-Za-z0-9_.-]+/[A-Za-z0-9_./-]+@[0-9a-f]{40}[[:space:]]+#[[:space:]]*v[0-9]+\.[0-9]+\.[0-9]+[[:space:]]*$'
+# strict single trailing comment token. The token names the ref the SHA came from:
+# `# vX.Y.Z` for tagged upstreams, or a branch/manifest-style name (`# stable`,
+# `# 1.83.0`) for upstreams that only publish branch refs. Anything unusual
+# (quotes, flow mappings, short SHAs, trailing text, several tokens) fails closed
+# instead of being guessed at. The pin itself is always the SHA.
+pinned='^[[:space:]]*(-[[:space:]]+)?uses:[[:space:]]+[A-Za-z0-9_.-]+/[A-Za-z0-9_./-]+@[0-9a-f]{40}[[:space:]]+#[[:space:]]*(v[0-9]+\.[0-9]+\.[0-9]+|[0-9]+\.[0-9]+\.[0-9]+|.+-.+|[[:alpha:]][[:alnum:]_.-]*)[[:space:]]*$'
+# A bare major version says nothing about which release was pinned, so it is
+# rejected even though it matches the token shape above.
+bare_major='#[[:space:]]*v[0-9]+[[:space:]]*$'
 # Local (in-repo) references are exempt: they are pinned by the checkout itself.
 local_ref='^[[:space:]]*(-[[:space:]]+)?uses:[[:space:]]*\./'
 
@@ -64,7 +69,8 @@ for f in "${files[@]}"; do
       local=$((local + 1))
       continue
     fi
-    if ! printf '%s\n' "$text" | grep -qE "$pinned"; then
+    if ! printf '%s\n' "$text" | grep -qE "$pinned" \
+      || printf '%s\n' "$text" | grep -qE "$bare_major"; then
       trimmed="$(printf '%s' "$text" | sed 's/^[[:space:]]*//')"
       printf '%s:%s: not pinned: %s\n' "$f" "$line_no" "$trimmed"
       bad=$((bad + 1))
@@ -73,8 +79,8 @@ for f in "${files[@]}"; do
 done
 
 if [ "$bad" -gt 0 ]; then
-  printf 'G1 FAILED: %s of %s external reference(s) are not pinned to a full SHA with "# vX.Y.Z"\n' "$bad" "$total"
-  printf '           replace the upstream tag with a 40-hex commit SHA and keep the version in the comment.\n'
+  printf 'G1 FAILED: %s of %s external reference(s) are not pinned to a full SHA with a single source comment\n' "$bad" "$total"
+  printf '           pin the commit SHA and name the ref in one comment token (# vX.Y.Z, or # stable).\n'
   exit 1
 fi
 

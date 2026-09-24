@@ -17,6 +17,6 @@ jobs:
     steps:
       # Branch mode: assets are committed to the orphan `reposcope` branch,
       # never to master. README references raw URLs of that branch.
-      - uses: liuchong/reposcope@v0.0.1
+      - uses: liuchong/reposcope@308273b88fe07a4e8cd80b433da28e7d5ba16c75 # v0.0.1
         with:
           branch: reposcope

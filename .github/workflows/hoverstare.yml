@@ -76,7 +76,7 @@ jobs:
         github.event.comment.in_reply_to_id &&
         github.event.comment.user.type != 'Bot')
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0 # show_base_file 需要 base 分支历史
           fetch-tags: true # 版本可用 tag 指定（自救时）
@@ -226,13 +226,15 @@ jobs:
           git worktree add --detach "$RUNNER_TEMP/hoverstare-src" \
             "${{ steps.source.outputs.commit }}"
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: stable
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       # The pinned worktree gets its own cache, keyed by the pinned revision:
       # every round of one flow then rebuilds nothing.
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         if: steps.source.outputs.mode == 'pinned'
         with:
           workspaces: ${{ runner.temp }}/hoverstare-src -> target
@@ -262,7 +264,7 @@ jobs:
       # 品牌身份：评论/推送用 hoverstare[bot]（App token 可触发 CI）
       - name: Create App token
         id: app-token
-        uses: actions/create-github-app-token@v2
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
         with:
           app-id: ${{ secrets.HOVERSTARE_APP_ID }}
           private-key: ${{ secrets.HOVERSTARE_APP_PRIVATE_KEY }}

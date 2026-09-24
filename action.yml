@@ -41,7 +41,7 @@ runs:
     # github.token 上下文（App token 无 cache 写权限，post-cache 会报 warning）
     - name: Cache hoverstare binary
       id: cache
-      uses: actions/cache@v4
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
       env:
         GITHUB_TOKEN: ${{ github.token }}
       with:
@@ -70,7 +70,7 @@ runs:
     - name: Create App token (brand identity)
       if: inputs.app_id != ''
       id: app-token
-      uses: actions/create-github-app-token@v2
+      uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
       with:
         app-id: ${{ inputs.app_id }}
         private-key: ${{ inputs.app_private_key }}
