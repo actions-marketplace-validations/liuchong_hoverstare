@@ -60,21 +60,26 @@ jobs:
           set -euo pipefail
           cd /tmp
 
+          # Keep the published filenames: `sha256sum -c` looks the file up by the
+          # name recorded in the checksums file, so renaming the download fails the
+          # check (which is how the first attempt broke — verified locally since).
           actionlint_version=1.7.12
+          actionlint_tar="actionlint_${actionlint_version}_linux_amd64.tar.gz"
           actionlint_base="https://github.com/rhysd/actionlint/releases/download/v${actionlint_version}"
-          curl -fsSL "${actionlint_base}/actionlint_${actionlint_version}_linux_amd64.tar.gz" -o actionlint.tgz
+          curl -fsSL "${actionlint_base}/${actionlint_tar}" -o "${actionlint_tar}"
           curl -fsSL "${actionlint_base}/actionlint_${actionlint_version}_checksums.txt" -o actionlint.sums
-          grep " actionlint_${actionlint_version}_linux_amd64.tar.gz$" actionlint.sums | sha256sum -c -
-          tar -xzf actionlint.tgz actionlint
+          grep " ${actionlint_tar}$" actionlint.sums | sha256sum -c -
+          tar -xzf "${actionlint_tar}" actionlint
           sudo install -m 0755 actionlint /usr/local/bin/actionlint
           actionlint -version
 
           gitleaks_version=8.30.1
+          gitleaks_tar="gitleaks_${gitleaks_version}_linux_x64.tar.gz"
           gitleaks_base="https://github.com/gitleaks/gitleaks/releases/download/v${gitleaks_version}"
-          curl -fsSL "${gitleaks_base}/gitleaks_${gitleaks_version}_linux_x64.tar.gz" -o gitleaks.tgz
+          curl -fsSL "${gitleaks_base}/${gitleaks_tar}" -o "${gitleaks_tar}"
           curl -fsSL "${gitleaks_base}/gitleaks_${gitleaks_version}_checksums.txt" -o gitleaks.sums
-          grep " gitleaks_${gitleaks_version}_linux_x64.tar.gz$" gitleaks.sums | sha256sum -c -
-          tar -xzf gitleaks.tgz gitleaks
+          grep " ${gitleaks_tar}$" gitleaks.sums | sha256sum -c -
+          tar -xzf "${gitleaks_tar}" gitleaks
           sudo install -m 0755 gitleaks /usr/local/bin/gitleaks
           gitleaks version
 
