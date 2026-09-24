@@ -122,7 +122,8 @@ expect_status "verify-all rejects unknown arguments" 2 "$?"
 # through this runner, so this case pins the behaviour.
 ./scripts/verify-all.sh >"$tmp/all.txt" 2>&1
 awk '/^-- summary --$/{inside=1; next} inside && /^G[0-9] /{print}' "$tmp/all.txt" >"$tmp/summary.txt"
-expect_line_count "verify-all summary lists every attempted gate" "$tmp/summary.txt" 4
+# The default set is G1/G2/G5/G6/G7 (G3/G4 live behind --full).
+expect_line_count "verify-all summary lists every attempted gate" "$tmp/summary.txt" 5
 expect_contains "verify-all summary includes G6" "$tmp/summary.txt" "G6"
 
 printf -- '--\n%s passed, %s failed\n' "$pass" "$fail"

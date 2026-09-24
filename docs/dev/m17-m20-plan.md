@@ -248,8 +248,16 @@ SelectOptions / 成组）、`--preview`（人类可读 + JSON）、覆盖声明�
   Star 段标题各不相同，按英文猜的一律没命中——最终按各自语言实际标题定位）
 - ✅ T20.8：覆盖率基线 = 实测 80.36% 行覆盖（阈值 79.8%，比实测低半点）
 - ✅ T20.9：`.gitleaks.toml`（保留默认规则 + 只白名单夹具目录）
-- ✅ T20.10：`ci.yml` 新增 `gates` job：`verify-all.sh --full --strict` + 门禁自测；
-  工具用 pin 住的 `taiki-e/install-action` 安装（actionlint/gitleaks/cargo-deny/cargo-audit/cargo-llvm-cov）
+- ✅ T20.10：`ci.yml` 新增两个阻塞 job——`gates`（快集合 `--strict` + 门禁自测）与
+  `gates-heavy`（`--full --strict`），各带 `timeout-minutes`（15 / 45）。
+  **实测教训**：把七个门禁塞进一个 job 时，首次运行超过 60 分钟仍未结束且进行中的日志不可见；
+  阻塞式门禁必须分层 + 有超时，否则它不是信号而是黑箱。工具安装也踩了两次：
+  `taiki-e/install-action` 的 binstall 回退只认 Rust crate（actionlint/gitleaks 都不在其中），
+  改为从上游 release 装并核对 sha256——而且**校验和步骤要保留上游文件名**（`sha256sum -c`
+  按记录名查找），这一段现在先在本地跑通再写进 workflow。
+  期间 CI 四次红都不是环境运气，而是真实缺陷：测试依赖 CI 才有的 `GITHUB_ACTIONS`、
+  `::group::` 标记写到了 stdout、两个工具装不上、校验和文件名不匹配。
+  AGENTS.md §7 #36 记录了"本地绿 ≠ CI 绿，push 后必须看 run"这条纪律。
 - ✅ T20.11：CONTRIBUTING 增补门禁表与"上游 action 升级流程"（含分支引用类 action 的 toolchain 陷阱）
 - **诚实边界（本回合实际验证到哪一步）**：
   - G1/G2/G6/G7：本地 `scripts/verify-all.sh` 全绿（`all gates passed (0 skipped)`），门禁自测 18/18；

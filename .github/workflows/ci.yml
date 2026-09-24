@@ -27,42 +27,28 @@ jobs:
             rhysd/actionlint@sha256:9d36088643581e728c969f35141f88139fec77280b2be23c1f66f8e40e1025e7 \
             -color -shellcheck=
 
-  # Engineering gates (spec 17). One entry point for the whole gate set, so what
-  # a contributor runs locally is what CI enforces. --strict makes a missing tool
-  # a failure: a gate that silently skips is not a gate.
+  # Engineering gates (spec 17). One entry point for the whole gate set, so what a
+  # contributor runs locally is what CI enforces. Split in two because the heavy
+  # pair needs a toolchain and minutes: a single job that took over an hour with no
+  # visible progress is a black box, not a gate. Both are blocking.
   gates:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       # Full history: G5 scans commits, not just the working tree.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
 
-      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
-        with:
-          toolchain: stable
-
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-
-      # G3/G4/G5 need real tools: dependency audit, coverage and secret scan.
-      # Installed from prebuilt binaries so the gate does not add a multi-minute
-      # source build to every run.
-      - uses: taiki-e/install-action@7623a79cdfecb99d681017af368ca353d9f49bb5 # v2.87.19
-        with:
-          tool: cargo-deny,cargo-audit,cargo-llvm-cov
-
-      # actionlint (G6) and gitleaks (G5) are not Rust crates, so the catalogue
-      # above cannot provide them. They come from their upstream releases with the
-      # published checksums verified: a gate tool should not itself be a floating
-      # download.
+      # actionlint (G6) and gitleaks (G5) are not Rust crates, so they come from
+      # their upstream releases with the published checksums verified: a gate tool
+      # should not itself be a floating download. The filenames are kept as
+      # published because `sha256sum -c` looks the file up by that name.
       - name: Install actionlint and gitleaks (pinned + checksum)
         run: |
           set -euo pipefail
           cd /tmp
 
-          # Keep the published filenames: `sha256sum -c` looks the file up by the
-          # name recorded in the checksums file, so renaming the download fails the
-          # check (which is how the first attempt broke — verified locally since).
           actionlint_version=1.7.12
           actionlint_tar="actionlint_${actionlint_version}_linux_amd64.tar.gz"
           actionlint_base="https://github.com/rhysd/actionlint/releases/download/v${actionlint_version}"
@@ -83,14 +69,36 @@ jobs:
           sudo install -m 0755 gitleaks /usr/local/bin/gitleaks
           gitleaks version
 
-      - name: Install llvm-tools (coverage gate)
-        run: rustup component add llvm-tools-preview
-
-      - name: Gates (blocking)
-        run: scripts/verify-all.sh --full --strict
+      - name: Gates — fast set (blocking)
+        run: scripts/verify-all.sh --strict
 
       - name: Gate self-test
         run: scripts/tests/test-gates.sh
+
+  # The two gates that need a toolchain and minutes: dependency/licence audit and
+  # the coverage floor. Blocking as well, with a timeout so a hang fails loudly
+  # instead of silently burning an hour.
+  gates-heavy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: stable
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+
+      - uses: taiki-e/install-action@7623a79cdfecb99d681017af368ca353d9f49bb5 # v2.87.19
+        with:
+          tool: cargo-deny,cargo-audit,cargo-llvm-cov
+
+      - name: Install llvm-tools (coverage gate)
+        run: rustup component add llvm-tools-preview
+
+      - name: Gates — heavy set (blocking)
+        run: scripts/verify-all.sh --full --strict
 
   check:
     runs-on: ubuntu-latest

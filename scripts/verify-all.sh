@@ -3,10 +3,12 @@
 # Verification gates runner (spec 17). One command to run every engineering
 # gate; CI wires the same entry point.
 #
-#   default gates : G1 action pins, G2 doc structure, G6 workflow/script lint,
-#                   G7 spec index (all fast, no extra toolchain)
-#   --full adds   : G3 dependency + license audit, G4 coverage not regressed,
-#                   G5 secret scan
+#   default gates : G1 action pins, G2 doc structure, G5 secret scan,
+#                   G6 workflow/script lint, G7 spec index — all seconds-to-minutes
+#                   (G5 needs only gitleaks)
+#   --full adds   : G3 dependency + license audit, G4 coverage not regressed —
+#                   the two that need a toolchain and minutes, kept out of the
+#                   default path so a contributor gets fast feedback
 #   --strict      : a gate whose tool is missing counts as FAILED (CI uses this)
 #   --list        : print the gate list and exit
 #
@@ -28,8 +30,8 @@ while [ "$#" -gt 0 ]; do
     --list)
       printf 'G1 action pins        scripts/verify-action-pins.sh\n'
       printf 'G2 doc structure      scripts/check-doc-structure.sh\n'
-      printf 'G3 dependency audit   cargo deny check + cargo audit\n'
-      printf 'G4 coverage floor     cargo llvm-cov --fail-under-lines (scripts/coverage-baseline.txt)\n'
+      printf 'G3 dependency audit   cargo deny check + cargo audit      (--full)\n'
+      printf 'G4 coverage floor     cargo llvm-cov --fail-under-lines    (--full)\n'
       printf 'G5 secret scan        gitleaks detect\n'
       printf 'G6 workflow/script lint actionlint + shellcheck\n'
       printf 'G7 spec index         scripts/verify-spec-index.sh\n'
@@ -176,12 +178,12 @@ run_g7() {
 printf '== HoverStare verification gates (spec 17)%s ==\n' "$( [ "$full" -eq 1 ] && printf ', --full' )"
 run_g1
 run_g2
+run_g5
 run_g7
 run_g6
 if [ "$full" -eq 1 ]; then
   run_g3
   run_g4
-  run_g5
 fi
 
 failed=0

@@ -89,8 +89,8 @@
 ## 2. 运行方式
 
 ```
-scripts/verify-all.sh                  # 默认：G1 G2 G6 G7（快，无需额外工具链）
-scripts/verify-all.sh --full           # 追加 G3 G4 G5（依赖审计 / 覆盖率 / 密钥扫描）
+scripts/verify-all.sh                  # 默认：G1 G2 G5 G6 G7（秒级到分钟级）
+scripts/verify-all.sh --full           # 追加 G3 G4（依赖审计 / 覆盖率，需要工具链与时间）
 scripts/verify-all.sh --strict         # 缺工具即算失败（CI 用这个）
 scripts/verify-all.sh --list           # 列出全部门禁
 scripts/tests/test-gates.sh            # 门禁自身的自测（正例/反例 fixture）
@@ -101,10 +101,14 @@ scripts/tests/test-gates.sh            # 门禁自身的自测（正例/反例 f
   一定是阻塞项，不会静默通过。
 - **汇总完整性**：每次运行都必须为每个执行过的门禁打印一行结果（`PASS`/`FAIL`/`SKIP`），
   失败但不出现在汇总里视为门禁自身的缺陷（已由 `scripts/tests/test-gates.sh` 锁定）。
-- ✅ CI（M20 已接线）：`ci.yml` 新增 `gates` job，跑 `scripts/verify-all.sh --full --strict`
-  （工具由 pin 住的 `taiki-e/install-action` 安装：actionlint / gitleaks / cargo-deny /
-  cargo-audit / cargo-llvm-cov，并装 `llvm-tools-preview`），随后跑门禁自测
-  `scripts/tests/test-gates.sh`。**本地能跑的就是 CI 强制的**：同一个入口脚本。
+- ✅ CI（M20 已接线）：`ci.yml` 用**两个** job，都阻塞：
+  - `gates`（快）：`scripts/verify-all.sh --strict` + 门禁自测；工具只装 actionlint 与
+    gitleaks（上游 release + sha256 校验）；
+  - `gates-heavy`：`scripts/verify-all.sh --full --strict`；装 cargo-deny / cargo-audit /
+    cargo-llvm-cov 与 `llvm-tools-preview`。
+  分开的理由是实测：把七个门禁塞进一个 job 时，首次运行超过 **60 分钟**仍未结束，且进行中的
+  日志不可见——阻塞式门禁必须分层并带 `timeout-minutes`，否则它不是信号而是黑箱。
+  **本地能跑的就是 CI 强制的**：同一个入口脚本。
 
 ### G2 的诊断诚实性
 
