@@ -76,7 +76,7 @@ P0 门禁脚本骨架 ──► S1 M17 审查单元与覆盖 ──┬──► 
 | ✅ T17.3 | `diff::filter_text`/`truncate_text` 改为 `select` 薄包装并标 `deprecated`；迁移仓库内调用点 | 12 项既有 diff 单测仍绿 |
 | ✅ T17.4 | `orchestrator::run_review` 用 `select` 一次算出 `Selection`，传进 `analyze` → `pipeline::run` | 选择结果在预览与运行间逐项一致（回归护栏测试） |
 | ✅ T17.5 | 覆盖账本接线（分母冻结、状态迁移、终态计算），`Outcome::Published` 增加 `terminal`/`usage` | 状态机四类终态单测 |
-| T17.6 | `--preview`（`ReviewArgs`）+ 在 LLM 凭据校验前短路；人类可读输出 + `--format json` 的 `units` 段 | 端到端：真实 PR 预览零 provider 请求（日志断言） |
+| ✅ T17.6 | `--preview`（`ReviewArgs`）+ 在 LLM 凭据校验前短路；人类可读输出 + `--format json` 的 `units` 段 | 端到端：真实 PR 预览零 provider 请求（日志断言） |
 | T17.7 | `report::build_review` 渲染覆盖声明行（`T::coverage_line`，`report_coverage` 默认开） | 摘要渲染单测 + 真实 PR 目视 |
 | T17.8 | 文档同步：AGENTS.md 运维经验（若有坑）+ 本设计文档行号刷新 | diff 检查 |
 
@@ -98,6 +98,18 @@ P0 门禁脚本骨架 ──► S1 M17 审查单元与覆盖 ──┬──► 
   标为 `empty`，因为它们不涉及审查单元）；spec 14 §4 补了 v1 状态语义表；
 - 计划偏差（有意，已在 spec 与本文记录）：`Outcome` 里的 `usage` 聚合随 T19.6 一起做，
   本任务只透出 `terminal`——`Usage` 的聚合点属于输出契约那条线，提前做会出现两处 token 账。
+- ✅ T17.6 已交付：`prepare_inputs` 抽出（预览与运行同源的结构保证）、`orchestrator::preview`、
+  `review --preview` / `--format human|json`、`Outcome::Previewed`；
+  `Config::load_read_only()` 让只读命令不需要模型凭据（spec 01 同步说明）；`--format json`
+  在非预览时**明确报错**而不是静默忽略（结构化输出属 M19）；
+- 前移项（有意）：spec 16 §4.3 的"日志改 stderr"提前到本任务完成——否则预览的 stdout 会被日志
+  污染，预览 JSON 不可用；T19.5 仍需补自动化 stdout 纯净性断言；
+- 真实验证（无模型凭据、真实 PR `0xPlaygrounds/rig#2162`）：`--preview` 输出
+  `preview: full scope — 1 review unit(s), ~329 tokens, no model calls`，stdout 无日志、
+  stderr 无任何 provider 请求；`--format json` 的 stdout 通过 `jq` 形状校验
+  （`units[0].status == "pending"`、`mode == "full"`、`unit_id` 前缀 `changeset:`）；
+  带假凭据时 `--format json` 非预览 → exit 1 且给出明确提示；无凭据真实运行 → 仍按 spec 01
+  exit 1（配置错误路径未被削弱）。
 
 **验收**：spec 14 §10 四条。
 

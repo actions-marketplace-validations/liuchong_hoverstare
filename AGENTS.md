@@ -280,6 +280,10 @@ cargo fmt && cargo clippy --workspace --all-targets -- -D warnings
     `@hoverstare continue`**——链只到无人处，绝不空转。若"一次跑两条 / 漏跑 / 空队列还在
     continue"，先对照 §7 #10（并发组）与队列的 claim/gate（`devqueue::precheck` /
     `plan_round`）。
+34. **stdout 是给机器/人的产物，stderr 才是日志**：`tracing` 必须 `.with_writer(stderr)`
+    （曾默认写 stdout）。否则 `--preview`（以及 spec 16 的结构化输出）会把日志混进管道，
+    `--format json | jq` 直接失效。新增任何"打印到 stdout"的功能时，先确认日志仍在 stderr。
+
 
 ## 7.5 Dogfood 验证手册（开发模式端到端怎么测）
 

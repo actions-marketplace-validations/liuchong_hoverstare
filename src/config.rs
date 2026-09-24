@@ -61,7 +61,9 @@ pub struct Config {
     /// fallback and dev-mode git push. Never used as the API identity —
     /// comments/reviews always go through `github_token` (App token).
     pub gh_pat: Option<SecretString>,
-    pub llm: LlmCredentials,
+    /// Model credentials. `None` only for read-only commands (spec 14 §3); a run
+    /// still fails fast when they are missing (spec 01).
+    pub llm: Option<LlmCredentials>,
     /// M3 (tool sandbox root)
     pub workspace: PathBuf,
     /// M14 (fine-grained permissions, spec 12)
@@ -529,12 +531,32 @@ impl Config {
         PermissionsEvaluator::new(self.permissions.clone())
     }
 
+    /// Load config for a run: model credentials are required (spec 01).
     pub fn load() -> anyhow::Result<Config> {
+        Self::load_with(true)
+    }
+
+    /// Load config for a read-only command (`help`, `review --preview`, `rules`):
+    /// everything is resolved, but missing model credentials are not an error
+    /// because such a command never calls the model (spec 14 §3).
+    pub fn load_read_only() -> anyhow::Result<Config> {
+        Self::load_with(false)
+    }
+
+    fn load_with(require_llm: bool) -> anyhow::Result<Config> {
         let workspace = std::env::var("GITHUB_WORKSPACE")
             .map(PathBuf::from)
             .unwrap_or_else(|_| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
         let toml = Self::load_toml(&workspace)?;
-        Self::merge(toml, workspace)
+        Self::merge(toml, workspace, require_llm)
+    }
+
+    /// Single source for "this command needed a model but no credentials were
+    /// configured" (used by the loader and by `RigBackend::from_config`).
+    pub(crate) fn missing_llm_credentials_error() -> anyhow::Error {
+        anyhow::anyhow!(
+            "missing LLM credentials: set OPENAI_API_KEY (optionally with OPENAI_BASE_URL) or ANTHROPIC_API_KEY"
+        )
     }
 
     fn load_toml(workspace: &Path) -> anyhow::Result<TomlConfig> {
@@ -547,7 +569,7 @@ impl Config {
         toml::from_str(&text).with_context(|| format!("failed to parse {}", path.display()))
     }
 
-    fn merge(t: TomlConfig, workspace: PathBuf) -> anyhow::Result<Config> {
+    fn merge(t: TomlConfig, workspace: PathBuf, require_llm: bool) -> anyhow::Result<Config> {
         // model: HOVERSTARE_MODEL env var > toml > default
         let model = std::env::var("HOVERSTARE_MODEL")
             .ok()
@@ -689,21 +711,21 @@ impl Config {
             std::env::var("OPENAI_API_KEY"),
             std::env::var("ANTHROPIC_API_KEY"),
         ) {
-            (Ok(key), _) if !key.is_empty() => LlmCredentials::OpenAICompatible {
+            (Ok(key), _) if !key.is_empty() => Some(LlmCredentials::OpenAICompatible {
                 key: SecretString::from(key),
                 // empty string (e.g. unset Actions var interpolation) counts as unset
                 base_url: std::env::var("OPENAI_BASE_URL")
                     .ok()
                     .filter(|s| !s.is_empty())
                     .unwrap_or_else(|| "https://api.openai.com/v1".to_string()),
-            },
-            (_, Ok(key)) if !key.is_empty() => LlmCredentials::Anthropic {
+            }),
+            (_, Ok(key)) if !key.is_empty() => Some(LlmCredentials::Anthropic {
                 key: SecretString::from(key),
                 base_url: std::env::var("ANTHROPIC_BASE_URL").ok(),
-            },
-            _ => bail!(
-                "missing LLM credentials: set OPENAI_API_KEY (optionally with OPENAI_BASE_URL) or ANTHROPIC_API_KEY"
-            ),
+            }),
+            _ if require_llm => return Err(Self::missing_llm_credentials_error()),
+            // Read-only commands may run without a model at all.
+            _ => None,
         };
 
         // Identity token (comments/reviews/API): GITHUB_TOKEN only (App token in Actions).
@@ -795,7 +817,7 @@ mod tests {
     fn merge_str(toml: &str) -> anyhow::Result<Config> {
         unsafe { std::env::set_var("OPENAI_API_KEY", "test-key") };
         let t: TomlConfig = toml::from_str(toml)?;
-        Config::merge(t, PathBuf::from("/tmp/x"))
+        Config::merge(t, PathBuf::from("/tmp/x"), true)
     }
 
     #[test]

@@ -180,7 +180,7 @@ async fn do_review(
     let args = ReviewArgs {
         pr: Some(ev.pr_number),
         repo: Some(repo.full_name()),
-        dry_run: false,
+        ..Default::default()
     };
     match orchestrator::run_review(cfg, &args, true).await? {
         Outcome::Published {
@@ -192,6 +192,8 @@ async fn do_review(
         )),
         Outcome::Skipped(r) => Ok(format!("skipped: {r}")),
         Outcome::AnalysisFailed(r) => Err(anyhow::anyhow!("analysis failed: {r}")),
+        // A mention command never previews; the arm exists for exhaustiveness.
+        Outcome::Previewed { units, .. } => Ok(format!("preview only ({units} units)")),
         Outcome::DryRun => Ok("done".to_string()),
     }
 }
@@ -301,7 +303,7 @@ async fn do_thread_discussion(
     }
     user_prompt.push_str(&format!("\n\n[User reply]\n{}", ev.body));
 
-    let backend = crate::agent::rig_backend::RigBackend::from_config(cfg);
+    let backend = crate::agent::rig_backend::RigBackend::from_config(cfg)?;
     let shared: Arc<ToolShared> =
         ToolShared::new(cfg.workspace.clone(), "HEAD", cfg.max_tool_calls / 2);
     let req = ReviewRequest {
@@ -417,7 +419,7 @@ async fn do_explain(
         (body, None)
     };
 
-    let backend = crate::agent::rig_backend::RigBackend::from_config(cfg);
+    let backend = crate::agent::rig_backend::RigBackend::from_config(cfg)?;
     let text = explain_with_backend(&backend, cfg, &context, &ev.body).await?;
     let body = format!("{}\n\n{text}", T::new(cfg.language).explain_header());
     // With in_reply_to_id the reply stays in the original thread (REST replies

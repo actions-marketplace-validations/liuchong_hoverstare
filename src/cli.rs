@@ -90,6 +90,48 @@ pub struct ReviewArgs {
     /// Run the full analysis without publishing; print the review JSON to stdout
     #[arg(long)]
     pub dry_run: bool,
+
+    /// Report what would be reviewed and exit without calling the model
+    /// (spec 14 §3)
+    #[arg(long)]
+    pub preview: bool,
+
+    /// Output format: `human` (default) or `json`. Structured output for the run
+    /// itself lands with spec 16 (M19); today `json` applies to `--preview`.
+    #[arg(long, value_enum, default_value = "human")]
+    pub format: OutputFormat,
+}
+
+impl Default for ReviewArgs {
+    /// The no-flag form used by internal callers (mention commands, serve mode).
+    fn default() -> Self {
+        ReviewArgs {
+            pr: None,
+            repo: None,
+            dry_run: false,
+            preview: false,
+            format: OutputFormat::Human,
+        }
+    }
+}
+
+/// Output format selector (spec 16 §1 defines the full set; `sarif` arrives with
+/// M19, so it is accepted here and rejected with an explicit message until then).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum OutputFormat {
+    Human,
+    Json,
+    Sarif,
+}
+
+impl OutputFormat {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            OutputFormat::Human => "human",
+            OutputFormat::Json => "json",
+            OutputFormat::Sarif => "sarif",
+        }
+    }
 }
 
 /// CLI main entry point (shared by the hoverstare and bugbot alias binaries)
@@ -101,10 +143,14 @@ pub async fn run() {
     } else {
         "hoverstare=info"
     };
+    // Logs go to stderr so that stdout stays a clean, pipeable channel: the
+    // preview prints its selection there, and spec 16's structured output will
+    // too (a log line mixed into a JSON document is not a document).
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| filter.into()))
         .with_target(false)
         .without_time()
+        .with_writer(std::io::stderr)
         .init();
 
     let code = match args.command {
@@ -115,6 +161,33 @@ pub async fn run() {
         Command::Help => run_help(),
     };
     std::process::exit(code);
+}
+
+/// One log line per terminal outcome (shared by the run and the preview).
+fn log_review_outcome(outcome: &orchestrator::Outcome) {
+    use orchestrator::Outcome::*;
+    match outcome {
+        Skipped(reason) => tracing::info!("skipped: {reason}"),
+        Published {
+            inline_comments,
+            terminal,
+        } => tracing::info!(
+            "✅ review published ({inline_comments} inline comments, coverage {})",
+            terminal.as_str()
+        ),
+        Previewed {
+            units,
+            excluded,
+            truncated,
+        } => tracing::info!(
+            "✅ preview: {units} unit(s) would be reviewed ({excluded} excluded, {truncated} truncated), no model calls"
+        ),
+        DryRun => tracing::info!("✅ dry-run complete (not published)"),
+        AnalysisFailed(reason) => {
+            // fail-open: analysis failure does not block CI (spec 01)
+            tracing::warn!("analysis failed (fail-open, exit 0): {reason}");
+        }
+    }
 }
 
 /// Config errors are problems the user must fix immediately -> exit 1 (spec 01)
@@ -133,28 +206,44 @@ fn run_help() -> i32 {
 }
 
 async fn run_review(args: ReviewArgs) -> i32 {
-    let cfg = match load_config() {
+    // A preview never calls the model, so it loads config without requiring
+    // model credentials (spec 14 §3): "what would be reviewed" must be askable
+    // in an environment that has no key yet.
+    let cfg = match if args.preview {
+        config::Config::load_read_only()
+    } else {
+        config::Config::load()
+    } {
         Ok(c) => c,
-        Err(code) => return code,
+        Err(e) => {
+            tracing::error!("config error: {e:#}");
+            return 1;
+        }
     };
+    if args.preview {
+        return match orchestrator::preview(&cfg, &args, args.format == OutputFormat::Json).await {
+            Ok(outcome) => {
+                log_review_outcome(&outcome);
+                0
+            }
+            Err(e) => {
+                tracing::error!("{e:#}");
+                1
+            }
+        };
+    }
+    if args.format != OutputFormat::Human {
+        // Refuse rather than silently ignore: the run's structured output is
+        // spec 16's job (M19), and a quiet no-op would look like it worked.
+        tracing::error!(
+            "--format {} is not supported for a run yet (spec 16 / M19); use --preview --format json",
+            args.format.as_str()
+        );
+        return 1;
+    }
     match orchestrator::run_review(&cfg, &args, false).await {
         Ok(outcome) => {
-            use orchestrator::Outcome::*;
-            match outcome {
-                Skipped(reason) => tracing::info!("skipped: {reason}"),
-                Published {
-                    inline_comments,
-                    terminal,
-                } => tracing::info!(
-                    "✅ review published ({inline_comments} inline comments, coverage {})",
-                    terminal.as_str()
-                ),
-                DryRun => tracing::info!("✅ dry-run complete (not published)"),
-                AnalysisFailed(reason) => {
-                    // fail-open: analysis failure does not block CI (spec 01)
-                    tracing::warn!("analysis failed (fail-open, exit 0): {reason}");
-                }
-            }
+            log_review_outcome(&outcome);
             0
         }
         Err(e) => {
@@ -171,7 +260,15 @@ async fn run_develop(args: DevelopArgs) -> i32 {
     };
     // M11 local mode: run a task in the current workspace, no GitHub events.
     if let Some(task) = args.task {
-        let backend = crate::agent::rig_backend::RigBackend::from_config(&cfg);
+        let backend = match crate::agent::rig_backend::RigBackend::from_config(&cfg) {
+            Ok(backend) => backend,
+            Err(e) => {
+                // Unreachable through `load_config` (it already requires
+                // credentials), but a configuration question never panics.
+                tracing::error!("{e:#}");
+                return 1;
+            }
+        };
         let budget = cfg.max_tool_calls.max(develop::DEFAULT_BUDGET_CALLS);
         return match develop::run(develop::DevelopRequest {
             workspace: &cfg.workspace,

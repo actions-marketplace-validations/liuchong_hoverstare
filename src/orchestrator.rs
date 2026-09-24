@@ -27,6 +27,14 @@ pub enum Outcome {
         /// Coverage terminal state (spec 14 §4): ok | partial | empty.
         terminal: units::TerminalState,
     },
+    /// `--preview`: the selection was reported and nothing was dispatched
+    /// (spec 14 §3). No model call happened, so there is no coverage to report
+    /// and no terminal state to derive.
+    Previewed {
+        units: usize,
+        excluded: usize,
+        truncated: usize,
+    },
     DryRun,
     AnalysisFailed(String),
 }
@@ -131,11 +139,42 @@ fn gha_group_end() {
     }
 }
 
-pub async fn run_review(
-    cfg: &Config,
-    args: &ReviewArgs,
-    force_full: bool,
-) -> anyhow::Result<Outcome> {
+/// Everything the preparation phase resolved: the change set, the selection and
+/// the coverage ledger it froze.
+///
+/// The preview and the real run consume this very value, so "what would be
+/// reviewed" and "what is reviewed" cannot drift apart (spec 14 §2).
+pub struct ReviewInputs {
+    pub repo: Repo,
+    pub gh: GitHubClient,
+    pub resolve_gh: GitHubClient,
+    pub pr_ref: event::PrRef,
+    pub pr: crate::github::PullRequest,
+    pub head_sha: String,
+    pub prior_sha: Option<String>,
+    pub incremental: bool,
+    /// Full-diff parse used for anchoring (spec 07).
+    pub anchor_parsed: ParsedDiff,
+    pub analysis_text: String,
+    pub truncated_files: Vec<String>,
+    pub excluded_files: usize,
+    pub analysis_selection: units::Selection,
+    pub coverage: units::CoverageLedger,
+}
+
+/// Result of preparation: ready to dispatch, or already terminal (skip /
+/// fail-open) so nothing further should happen in this run.
+pub enum Prep {
+    Ready(Box<ReviewInputs>),
+    Done(Outcome),
+}
+
+/// Resolve the event, the change set, the selection and the coverage ledger.
+///
+/// Shared by the real run and the preview: this is the structural half of the
+/// "one decision, two consumers" rule (spec 14 §2). It touches GitHub but never
+/// the model, which is why a preview needs no model credentials.
+async fn prepare_inputs(cfg: &Config, args: &ReviewArgs, force_full: bool) -> anyhow::Result<Prep> {
     let pr_ref = event::resolve_pr(args)?;
     let repo = Repo::parse(&pr_ref.repo).map_err(|e| anyhow::anyhow!("{e}"))?;
     let gh = GitHubClient::new(cfg.github_token.clone())?;
@@ -151,23 +190,32 @@ pub async fn run_review(
     // GitHub I/O failures (network/rate limit/permissions) are in the fail-open zone (spec 01)
     let pr = match gh.get_pull_request(&repo, pr_ref.number).await {
         Ok(p) => p,
-        Err(e) => return fail_or_open(cfg, anyhow::anyhow!("failed to fetch PR: {e}")),
+        Err(e) => {
+            return Ok(Prep::Done(fail_or_open(
+                cfg,
+                anyhow::anyhow!("failed to fetch PR: {e}"),
+            )?));
+        }
     };
 
     // Skip conditions (spec 01)
     let head_sha = pr.head.sha.clone();
     if pr.draft && !cfg.review_drafts {
-        return Ok(skip_outcome(cfg, &gh, &repo, &head_sha, "draft PR".into()).await);
+        return Ok(Prep::Done(
+            skip_outcome(cfg, &gh, &repo, &head_sha, "draft PR".into()).await,
+        ));
     }
     if pr.user.login.ends_with("[bot]") {
-        return Ok(skip_outcome(
-            cfg,
-            &gh,
-            &repo,
-            &head_sha,
-            format!("bot author: {}", pr.user.login),
-        )
-        .await);
+        return Ok(Prep::Done(
+            skip_outcome(
+                cfg,
+                &gh,
+                &repo,
+                &head_sha,
+                format!("bot author: {}", pr.user.login),
+            )
+            .await,
+        ));
     }
 
     // Auto-review permission gate (spec 12): actor is the PR author.
@@ -183,14 +231,16 @@ pub async fn run_review(
             .evaluate(PermissionKey::AutoReview, &gh, &repo, actor)
             .await
         {
-            return Ok(skip_outcome(
-                cfg,
-                &gh,
-                &repo,
-                &head_sha,
-                "auto-review permission denied".into(),
-            )
-            .await);
+            return Ok(Prep::Done(
+                skip_outcome(
+                    cfg,
+                    &gh,
+                    &repo,
+                    &head_sha,
+                    "auto-review permission denied".into(),
+                )
+                .await,
+            ));
         }
     }
 
@@ -210,10 +260,17 @@ pub async fn run_review(
     // Full diff (for anchoring + the analysis scope of full mode)
     let full_diff = match gh.get_pull_request_diff(&repo, pr_ref.number).await {
         Ok(d) => d,
-        Err(e) => return fail_or_open(cfg, anyhow::anyhow!("failed to fetch diff: {e}")),
+        Err(e) => {
+            return Ok(Prep::Done(fail_or_open(
+                cfg,
+                anyhow::anyhow!("failed to fetch diff: {e}"),
+            )?));
+        }
     };
     if full_diff.trim().is_empty() {
-        return Ok(skip_outcome(cfg, &gh, &repo, &head_sha, "empty diff".into()).await);
+        return Ok(Prep::Done(
+            skip_outcome(cfg, &gh, &repo, &head_sha, "empty diff".into()).await,
+        ));
     }
     // Selection runs once, through the one implementation (spec 14 §2). The
     // anchoring pass needs the same decision with the size budget applied, so it
@@ -227,21 +284,23 @@ pub async fn run_review(
         let delta = match gh.get_compare_diff(&repo, prior, &pr.head.sha).await {
             Ok(d) => d,
             Err(e) => {
-                return fail_or_open(
+                return Ok(Prep::Done(fail_or_open(
                     cfg,
                     anyhow::anyhow!("failed to fetch incremental diff: {e}"),
-                );
+                )?));
             }
         };
         if delta.trim().is_empty() {
-            return Ok(skip_outcome(
-                cfg,
-                &gh,
-                &repo,
-                &head_sha,
-                "no new changes since the last review".into(),
-            )
-            .await);
+            return Ok(Prep::Done(
+                skip_outcome(
+                    cfg,
+                    &gh,
+                    &repo,
+                    &head_sha,
+                    "no new changes since the last review".into(),
+                )
+                .await,
+            ));
         }
         units::select(&delta, &cfg.ignore, cfg.max_diff_kb)
     } else {
@@ -258,13 +317,139 @@ pub async fn run_review(
     // Coverage ledger (spec 14 §4): freeze the denominator now, before anything
     // is dispatched. From here on the ledger records what happened to that set
     // and nothing else — the denominator is never revised by the outcome.
-    let mut coverage = units::CoverageLedger::freeze(&analysis_selection.units);
+    let coverage = units::CoverageLedger::freeze(&analysis_selection.units);
     tracing::info!(
         "coverage: {} review unit(s) selected, {} excluded file(s), {} truncated file(s)",
         coverage.denominator().len(),
         excluded_files,
         truncated_files.len()
     );
+
+    Ok(Prep::Ready(Box::new(ReviewInputs {
+        repo,
+        gh,
+        resolve_gh,
+        pr_ref,
+        pr,
+        head_sha,
+        prior_sha,
+        incremental,
+        anchor_parsed,
+        analysis_text,
+        truncated_files,
+        excluded_files,
+        analysis_selection,
+        coverage,
+    })))
+}
+
+/// Preview the selection (spec 14 §3): report what a run would review and
+/// dispatch nothing.
+///
+/// It shares `prepare_inputs` with the real run on purpose — the structural half
+/// of "one decision, two consumers" (spec 14 §2) — so a preview never needs model
+/// credentials and can never disagree with what the run then does.
+pub async fn preview(cfg: &Config, args: &ReviewArgs, json: bool) -> anyhow::Result<Outcome> {
+    let inputs = match prepare_inputs(cfg, args, false).await? {
+        Prep::Done(outcome) => return Ok(outcome),
+        Prep::Ready(inputs) => *inputs,
+    };
+    let selection = &inputs.analysis_selection;
+    if json {
+        let doc = preview_json(selection, inputs.incremental);
+        println!("{}", serde_json::to_string_pretty(&doc)?);
+    } else {
+        print_preview(selection, inputs.incremental);
+    }
+    Ok(Outcome::Previewed {
+        units: selection.units.len(),
+        excluded: selection.excluded_count(),
+        truncated: selection.oversized_dropped().len(),
+    })
+}
+
+/// Machine-readable preview, shape-aligned with spec 16's `units` segment.
+/// Preview units are `pending` by definition: nothing has been dispatched.
+fn preview_json(selection: &units::Selection, incremental: bool) -> serde_json::Value {
+    serde_json::json!({
+        "mode": if incremental { "incremental" } else { "full" },
+        "estimated_tokens": selection.estimated_tokens,
+        "units": selection
+            .units
+            .iter()
+            .map(|u| serde_json::json!({
+                "unit_id": u.unit_id,
+                "files": u.files,
+                "status": "pending",
+            }))
+            .collect::<Vec<_>>(),
+        "excluded": selection
+            .excluded
+            .iter()
+            .map(|e| serde_json::json!({
+                "path": e.path,
+                "reason": e.reason.as_str(),
+                "kept_in_text": e.kept_in_text,
+            }))
+            .collect::<Vec<_>>(),
+        "truncated": selection.oversized_dropped(),
+    })
+}
+
+/// Human-readable preview on stdout (logs stay on stderr, spec 16 §4.3).
+fn print_preview(selection: &units::Selection, incremental: bool) {
+    println!(
+        "preview: {} scope — {} review unit(s), ~{} tokens, no model calls",
+        if incremental { "incremental" } else { "full" },
+        selection.units.len(),
+        selection.estimated_tokens
+    );
+    if selection.units.is_empty() {
+        println!("will review: (nothing)");
+    } else {
+        println!("will review:");
+        for unit in &selection.units {
+            println!("  {}", unit.files.join(", "));
+        }
+    }
+    if !selection.excluded.is_empty() {
+        println!("excluded:");
+        for e in &selection.excluded {
+            let note = if e.kept_in_text {
+                ", kept for anchoring"
+            } else {
+                ""
+            };
+            println!("  {} ({}{})", e.path, e.reason.as_str(), note);
+        }
+    }
+}
+
+pub async fn run_review(
+    cfg: &Config,
+    args: &ReviewArgs,
+    force_full: bool,
+) -> anyhow::Result<Outcome> {
+    let inputs = match prepare_inputs(cfg, args, force_full).await? {
+        Prep::Done(outcome) => return Ok(outcome),
+        Prep::Ready(inputs) => *inputs,
+    };
+    let ReviewInputs {
+        repo,
+        gh,
+        resolve_gh,
+        pr_ref,
+        pr,
+        head_sha,
+        prior_sha,
+        incremental,
+        anchor_parsed,
+        analysis_text,
+        truncated_files,
+        excluded_files,
+        analysis_selection: _,
+        mut coverage,
+    } = inputs;
 
     let analysis_parsed = ParsedDiff::parse(&analysis_text);
     if analysis_parsed.files.is_empty() {
@@ -655,7 +840,7 @@ pub async fn analyze(
                 .join(", ")
         );
     }
-    let backend = RigBackend::from_config(cfg);
+    let backend = RigBackend::from_config(cfg)?;
     let outcome = crate::pipeline::run(
         &backend,
         cfg,
@@ -681,4 +866,31 @@ pub async fn analyze(
         );
     }
     Ok(outcome.analysis)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn selection_with_one_unit() -> units::Selection {
+        let diff = "diff --git a/src/a.rs b/src/a.rs\n--- a/src/a.rs\n+++ b/src/a.rs\n@@ -1,0 +1,1 @@\n+x\n";
+        units::select(diff, &globset::GlobSetBuilder::new().build().unwrap(), 400)
+    }
+
+    #[test]
+    fn preview_document_is_pending_and_shape_aligned() {
+        let selection = selection_with_one_unit();
+        let doc = preview_json(&selection, false);
+        assert_eq!(doc["mode"], "full");
+        assert_eq!(doc["units"][0]["unit_id"], "changeset:src/a.rs");
+        assert_eq!(doc["units"][0]["status"], "pending");
+        assert_eq!(doc["truncated"].as_array().unwrap().len(), 0);
+        assert!(doc["estimated_tokens"].as_u64().unwrap() > 0);
+    }
+
+    #[test]
+    fn preview_document_reports_incremental_mode() {
+        let doc = preview_json(&selection_with_one_unit(), true);
+        assert_eq!(doc["mode"], "incremental");
+    }
 }

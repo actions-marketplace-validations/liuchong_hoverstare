@@ -99,13 +99,21 @@ Decision { unit | excluded(ExcludeReason), estimated_tokens }
 `hoverstare review --preview`（其他形态提供等价呈现：本地 CLI 直接打印，serve 提供
 只读端点）打印选择结果：**不发模型调用、不写 GitHub、不消耗额度**。
 
-输出内容（人类可读；`--format json` 时与 spec 16 的 `units` 段一致）：
+输出内容：
 
-- `will_review`：选中的 unit 列表（路径 + 估算 token）；
-- `excluded`：每个被排除项的原因（枚举值）；
-- 汇总行：`selected N / files M / estimated tokens T`。
+- **人类可读**（默认）：一行汇总（作用域 / 单元数 / 估算 token）+ `will review` 列表
+  + `excluded` 列表（每项带原因枚举，并标注"为锚定保留"的删除文件）；
+- **`--format json`**：与 spec 16 的 `units` 段同构——`units[]` 为
+  `{ unit_id, files, status }`，预览时 **`status` 恒为 `pending`**（尚未派发），
+  另附 `mode`（`full` / `incremental`）、`estimated_tokens`、`excluded[]`
+  （`{ path, reason, kept_in_text }`）与 `truncated[]`（被预算丢弃的路径）。
 
-用途：回答"为什么这个文件没被审"、预估成本、在改动配置后立刻验证效果。
+**同源性要求**：预览与真实运行必须走**同一段准备逻辑**（事件解析 → 变更集获取 →
+`select` → 账本冻结）。实现上不允许预览自己再写一遍取 diff 与选择的代码——这是
+"预览与运行同源"的落点，不是风格要求。
+
+**范围界定**：`--preview` 只报告、不派发、不发布、不写状态检查；退出码沿用 fail-open
+（GitHub 读取失败按分析区失败处理，配置错误仍 exit 1）。
 
 ## 4. 覆盖账本
 

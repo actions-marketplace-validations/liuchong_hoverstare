@@ -224,14 +224,22 @@ impl RigBackend {
     }
 
     /// Convenience constructor from the loaded config (spec 01/13).
-    pub fn from_config(cfg: &crate::config::Config) -> RigBackend {
-        RigBackend::with_options(
-            cfg.llm.clone(),
+    ///
+    /// Fallible because a read-only command's config carries no credentials
+    /// (spec 14 §3): reaching a backend without them is a clear error, never a
+    /// panic.
+    pub fn from_config(cfg: &crate::config::Config) -> anyhow::Result<RigBackend> {
+        let creds = cfg
+            .llm
+            .clone()
+            .ok_or_else(crate::config::Config::missing_llm_credentials_error)?;
+        Ok(RigBackend::with_options(
+            creds,
             cfg.reasoning,
             cfg.compaction,
             cfg.context_tokens
                 .unwrap_or(compaction::DEFAULT_CONTEXT_TOKENS),
-        )
+        ))
     }
 }
 

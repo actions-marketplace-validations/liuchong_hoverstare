@@ -43,7 +43,7 @@ async fn run_review_inner(state: &AppState, ev: &ReviewEvent) -> anyhow::Result<
     let args = ReviewArgs {
         pr: Some(ev.pr_number),
         repo: Some(ev.repo.clone()),
-        dry_run: false,
+        ..Default::default()
     };
     let outcome = orchestrator::run_review(&cfg, &args, false).await?;
     tracing::info!("review completed {}#{}: {outcome:?}", ev.repo, ev.pr_number);

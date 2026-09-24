@@ -39,8 +39,9 @@
     "timing": { "started_at": "…", "duration_ms": 0 },
     "terminal": "ok" | "partial" | "empty"     // spec 14 的覆盖终态
   },
-  "units": [ { "unit_id": "…", "files": ["…"], "status": "covered" | "failed" | "truncated",
-               "reason": "…" } ],
+  "units": [ { "unit_id": "…", "files": ["…"],
+               "status": "covered" | "failed" | "truncated" | "pending",
+               "reason": "…" } ],   // pending 只出现在 --preview 的文档里（尚未派发）
   "findings": [ {
       "fingerprint": "…",           // spec 07 的稳定标识
       "path": "src/a.rs", "line": 12, "end_line": 14, "side": "new",
@@ -56,7 +57,8 @@
 
 - **稳定排序**：`units` 按 `unit_id`，`findings` 按 `path` → `line` → `fingerprint`；
 - **路径规范**：一律仓库相对、正斜杠、不使用绝对路径；
-- **可枚举性**：`severity`、`status`、`terminal` 都是封闭枚举，新增值必须改本 spec。
+- **可枚举性**：`severity`、`status`、`terminal` 都是封闭枚举，新增值必须改本 spec；
+  `units[].status` 的 `pending` 专用于 `--preview` 文档（预览不派发，因此单元状态只能是 pending）。
 
 ## 3. SARIF 契约
 

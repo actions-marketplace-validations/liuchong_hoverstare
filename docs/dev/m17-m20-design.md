@@ -128,11 +128,13 @@ pub fn select_unbounded(input: &str, ignore: &GlobSet) -> Selection
 - 预览与真实运行**必须**调用同一个 `select`（spec 14 §2 的要求）；禁止在预览路径里
   另写一份判定。
 
-### 2.3 预览（`--preview`）——T17.6，未实现
+### 2.3 预览（`--preview`）——T17.6 ✅ 已实现
 
-- 落点：`src/cli.rs` 的 `ReviewArgs` 增加 `--preview`；
-- 时序：**在 LLM 凭据校验之前短路**（沿用 `help` 命令"无凭据可跑"的先例）——
-  预览不需要模型，只需要读事件与 diff 的 GitHub 权限；
+- 落点：`src/cli.rs` 的 `ReviewArgs` 增加 `--preview` 与 `--format human|json`；
+- 时序：**在 LLM 凭据校验之前短路**——`Config::load_read_only()` 不要求模型凭据，
+  预览只需要读事件与 diff 的 GitHub 权限；运行路径仍用 `Config::load()`（spec 01 不变）；
+- 同源保证：预览与运行共用 `prepare_inputs()`，它同时负责事件解析、变更集获取、`select`
+  与账本冻结——预览不可能与运行得出不同的选择；
 - 输出：人类可读表格（`will_review` / `excluded(reason)` / 汇总行）；`--format json`
   时输出 spec 16 的 `units` 段；
 - 退出码：0（即使有排除项）；配置错误仍按 spec 01 走 exit 1；
@@ -243,7 +245,8 @@ pub fn sarif(result: &AnalysisResult, units: &CoverageLedger, meta: &RunMeta) ->
 现在 `tracing_subscriber::fmt().init()`（`src/cli.rs:104-108`）写的是 **stdout**，
 一旦 `--format json|sarif` 走 stdout，日志就会污染管道。施工时必须：
 
-- 初始化改成写 stderr（`.with_writer(std::io::stderr)`），并写一条注释说明原因；
+- 初始化改成写 stderr（`.with_writer(std::io::stderr)`）——**已在 T17.6 完成**（否则预览的
+  stdout 会被日志污染；AGENTS.md §7 #34 记录了这条运维经验）；
 - 增加一条**回归断言**：`--format json` 时 stdout 只包含一个可解析的 JSON 文档；
 - 该改动影响所有形态的日志位置（人类可读形态下 stderr 同样是正确位置），
   需在 AGENTS.md 运维经验里记一笔（施工时一并更新）。

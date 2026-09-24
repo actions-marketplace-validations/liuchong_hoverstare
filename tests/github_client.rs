@@ -543,7 +543,7 @@ async fn skipped_run_still_posts_status_check() {
         &hoverstare::cli::ReviewArgs {
             pr: Some(1),
             repo: Some("o/r".into()),
-            dry_run: false,
+            ..Default::default()
         },
         false,
     )
@@ -588,7 +588,7 @@ async fn no_status_check_when_disabled() {
         &hoverstare::cli::ReviewArgs {
             pr: Some(1),
             repo: Some("o/r".into()),
-            dry_run: false,
+            ..Default::default()
         },
         false,
     )

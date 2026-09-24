@@ -146,7 +146,11 @@ CLI flag > 环境变量 > `.github/hoverstare.toml` > 内置默认值
 - `commit_identity` 必须是 `author` / `bot` / `coauthor`；`commit_author` 必须是 `Name <email>`
 - 压缩参数必须满足 `0 < compaction_keep_ratio < compaction_threshold_ratio < 1`；`summary_max_chars >= 200`
 - `ignore` 的 glob 必须可编译
-- `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` 至少一个存在
+- `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` 至少一个存在——**仅对会调用模型的命令**
+  （`review` 运行、`mention`、`develop`、`serve`）。只读命令（`help`、`review --preview`）
+  走宽松加载：配置照常解析校验，但缺模型凭据不是配置错误（spec 14 §3）。
+  运行时若仍拿到无凭据的配置（理论上不可达），`RigBackend::from_config` 会返回同一条可读错误，
+  不 panic。
 
 ## 跳过条件（`review` 满足任一即退出，exit 0）
 
