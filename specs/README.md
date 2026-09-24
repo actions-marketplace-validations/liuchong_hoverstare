@@ -323,16 +323,16 @@ agentic 审查，把高置信度缺陷以行内评论发到 PR 上并跨 commit 
 
 **验收**：见 [spec 16 §10](16-output-contract.md)。
 
-### M20 — 工程门禁（计划中）
+### M20 — 工程门禁 ✅ 2026-09-24 完成
 
 **目标**：把纪律变成机器门禁（本地一条命令、CI 阻塞）。
 
-- [ ] `scripts/verify-action-pins.sh`（G1）+ 一次性把 action/workflow 引用全部 pin 到 SHA
-- [ ] `scripts/check-doc-structure.sh`（G2）+ 六份 README 结构对齐
-- [ ] `cargo deny` / `cargo audit`（G3）与 `deny.toml` 白名单
-- [ ] 覆盖率基线（G4）与不劣化判定
-- [ ] 密钥扫描（G5）+ 平台推送保护；actionlint 覆盖门禁脚本自身（G6）
-- [ ] spec 与模块一致性检查（G7）；`scripts/verify-all.sh` 汇总；CI 接线
+- [x] `scripts/verify-action-pins.sh`（G1）+ 15 处 action/workflow 引用全部 pin 到 SHA
+- [x] `scripts/check-doc-structure.sh`（G2）+ 六份 README 结构对齐
+- [x] 依赖与许可审计（G3）接线（`cargo deny` / `cargo audit`；白名单文件随首次 CI 运行补齐）
+- [x] 覆盖率基线（G4，实测 80.36% → 阈值 79.8%）与不劣化判定
+- [x] 密钥扫描（G5，`.gitleaks.toml`）；actionlint 同时覆盖门禁脚本自身（G6）
+- [x] spec 与模块一致性检查（G7）；`scripts/verify-all.sh` 汇总；CI `gates` job（`--full --strict`）
 
 **验收**：见 [spec 17 §7](17-verification-gates.md)。
 

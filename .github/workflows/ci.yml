@@ -23,6 +23,36 @@ jobs:
           # 否则每次都要为风格红一次。把空值传给 -shellcheck 即关闭该集成。
           docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint:latest -color -shellcheck=
 
+  # Engineering gates (spec 17). One entry point for the whole gate set, so what
+  # a contributor runs locally is what CI enforces. --strict makes a missing tool
+  # a failure: a gate that silently skips is not a gate.
+  gates:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: stable
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+
+      # G3/G4/G5/G6 need real tools: dependency audit, coverage, secret scan and
+      # workflow lint. Installed from pinned binaries so the gate does not add a
+      # multi-minute source build to every run.
+      - uses: taiki-e/install-action@7623a79cdfecb99d681017af368ca353d9f49bb5 # v2.87.19
+        with:
+          tool: actionlint,gitleaks,cargo-deny,cargo-audit,cargo-llvm-cov
+
+      - name: Install llvm-tools (coverage gate)
+        run: rustup component add llvm-tools-preview
+
+      - name: Gates (blocking)
+        run: scripts/verify-all.sh --full --strict
+
+      - name: Gate self-test
+        run: scripts/tests/test-gates.sh
+
   check:
     runs-on: ubuntu-latest
     steps:

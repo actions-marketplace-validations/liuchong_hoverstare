@@ -1,0 +1,15 @@
+# Coverage floor for G4 (spec 17). One measured fact per line.
+#
+# How this file is produced: run `cargo llvm-cov --workspace --summary-only` and
+# read the TOTAL line-coverage percentage. The threshold is set half a point
+# below the measured value so ordinary refactoring does not fail the gate, while
+# an actual loss of coverage does.
+#
+# Raising it is always fine (that is the point). Lowering it requires a note in
+# this file saying what became untestable and why — a silent drop is how a floor
+# stops being a floor.
+#
+# measured: 80.36% lines (2026-09-24, M20 landing; regions 81.04%)
+# lowest modules at that time: src/serve/{auth,job,mod}.rs 0.00% (no tests),
+# src/event.rs 35.0%, src/mention.rs 36.9%, src/orchestrator.rs 51.6%
+min_lines=79.8

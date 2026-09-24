@@ -32,6 +32,41 @@ cargo test --workspace
 
 If `cargo fmt --all -- --check` fails, run `cargo fmt --all` to apply the formatting.
 
+## Engineering gates
+
+`scripts/verify-all.sh` is the single entry point; CI runs the same script with
+`--full --strict` (a missing tool is a failure there, so a gate can never pass by
+skipping). Locally:
+
+```bash
+scripts/verify-all.sh          # G1 G2 G6 G7 — fast, no extra toolchain
+scripts/verify-all.sh --full   # adds G3 dependency audit, G4 coverage, G5 secret scan
+scripts/tests/test-gates.sh    # self-test of the gates themselves
+```
+
+The gate list is in [`specs/17-verification-gates.md`](specs/17-verification-gates.md):
+
+| Gate | What it protects |
+|---|---|
+| G1 | Every `uses:` in `action.yml` and the workflows is pinned to a commit SHA (a moved upstream tag changes what runs inside a pinned consumer, and this repository's workflows hold an App key, a PAT and a GPG key) |
+| G2 | The six READMEs share one heading structure (translations drift silently otherwise) |
+| G3 | Dependencies carry no known advisories and only allow-listed licences |
+| G4 | Line coverage does not fall below `scripts/coverage-baseline.txt` |
+| G5 | No credential-shaped string reaches the repository |
+| G6 | Workflows and gate scripts lint clean |
+| G7 | Every spec is indexed and every module declares its spec |
+
+### Upgrading a pinned action
+
+1. Pick the version (a new patch of the current major is routine; a new major is a
+   separate decision with its own PR).
+2. Resolve the tag to a commit: `gh api repos/<owner>/<repo>/commits/<tag> --jq .sha`.
+3. Update the `uses:` line **and** the `# vX.Y.Z` comment in the same edit;
+   `scripts/verify-action-pins.sh` fails on a SHA without a source comment.
+4. For an action that publishes branch refs only (e.g. `dtolnay/rust-toolchain`),
+   keep `with: toolchain: …`: its behaviour comes from the ref, which the pin no
+   longer carries.
+
 ## Conventional Commits
 
 Use [Conventional Commits](https://www.conventionalcommits.org/) for all commit messages and PR titles. Common prefixes in this repo:

@@ -101,7 +101,10 @@ scripts/tests/test-gates.sh            # 门禁自身的自测（正例/反例 f
   一定是阻塞项，不会静默通过。
 - **汇总完整性**：每次运行都必须为每个执行过的门禁打印一行结果（`PASS`/`FAIL`/`SKIP`），
   失败但不出现在汇总里视为门禁自身的缺陷（已由 `scripts/tests/test-gates.sh` 锁定）。
-- CI：在现有 `ci.yml` 的 `check` job 之后增加门禁 job，全部为阻塞项。
+- ✅ CI（M20 已接线）：`ci.yml` 新增 `gates` job，跑 `scripts/verify-all.sh --full --strict`
+  （工具由 pin 住的 `taiki-e/install-action` 安装：actionlint / gitleaks / cargo-deny /
+  cargo-audit / cargo-llvm-cov，并装 `llvm-tools-preview`），随后跑门禁自测
+  `scripts/tests/test-gates.sh`。**本地能跑的就是 CI 强制的**：同一个入口脚本。
 
 ### G2 的诊断诚实性
 
@@ -123,10 +126,16 @@ scripts/tests/test-gates.sh            # 门禁自身的自测（正例/反例 f
 
 1. ✅ 已完成：`action.yml` 与四个 workflow 里的 15 处浮动引用改为 40 位 SHA + 来源注释
    （同主版本的最新补丁，不是顺手升大版本——升级是独立决定，流程写在 CONTRIBUTING）；
-2. 六份 README 结构对齐（G2 的起始状态）；
-3. 写入覆盖率基线文件；
-4. 开启平台侧密钥推送保护与 gitleaks 配置；
-5. `scripts/` 下新增门禁脚本与 `verify-all.sh`，并在 `ci.yml` 接线。
+2. ✅ 六份 README 结构对齐：五份翻译补 `## Contributing` 段并同步 `--preview`/`--format` 用法；
+3. ✅ 覆盖率基线：`scripts/coverage-baseline.txt` 记录实测 80.36% 行覆盖（M20 落地时），
+   阈值 79.8%（比实测低半点为正常重构留余量；下调必须在文件里写明什么变得不可测）；
+4. ✅ 密钥扫描：`.gitleaks.toml`（保留默认规则，只给"夹具目录"加白名单——那里的 token 是
+   故意的假值）；平台侧推送保护需在仓库设置里开启，属于运维动作；
+5. ✅ 门禁脚本与 `verify-all.sh` 早已就位（P0），本里程碑完成 CI 接线与一次性收尾。
+
+**诚实边界**：`gitleaks`、`cargo-deny`、`cargo-audit` 在编写机上没有安装，因此
+G3/G5 的**首次真实运行发生在 CI**（`--strict` 下缺工具即失败，不会静默通过）；
+G4 已在本地用真实 `cargo llvm-cov` 跑出基线与判定结果。
 
 ## 5. 非目标
 

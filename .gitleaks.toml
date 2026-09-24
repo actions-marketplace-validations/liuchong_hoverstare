@@ -1,0 +1,16 @@
+# Secret scanning (spec 17 G5).
+#
+# The default rule set is deliberately kept: the incident this gate exists for is
+# a real credential reaching the repository (a `.env~` backup was committed once,
+# and a human reviewer caught it). Adding rules is welcome; relaxing them needs a
+# reason written here.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Credential-shaped strings that are fixtures, never secrets"
+# The gate fixtures contain pinned commit SHAs and fake tokens on purpose; this
+# directory is test material, not configuration.
+paths = [
+  '''^scripts/tests/fixtures/''',
+]

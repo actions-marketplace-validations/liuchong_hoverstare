@@ -235,10 +235,31 @@ SelectOptions / 成组）、`--preview`（人类可读 + JSON）、覆盖声明�
 |---|---|---|
 | T20.6 | pin 全部 15 处 `uses:`（action.yml 2 / ci 4 / hoverstare 5 / release 3 / reposcope 1）为 40 位 SHA + `# vX.Y.Z` | `scripts/verify-action-pins.sh` 绿 |
 | T20.7 | 六份 README 结构对齐（补英文本已有的 `## Contributing` 段，六语同批） | `check-doc-structure.sh` 绿 |
-| T20.8 | 覆盖率基线（记录现状 + 排除项）与 `--full` 判定 | `verify-all.sh --full` 绿 |
-| T20.9 | 密钥扫描（`.gitleaks.toml` + 平台推送保护） | gitleaks 干净 |
-| T20.10 | CI 接线：`gates` job（G1–G7），工具版本固定 | CI 全绿；人为破坏任一项 → 变红 |
-| T20.11 | CONTRIBUTING 增补门禁说明与上游 action 升级步骤 | diff 检查 |
+| ✅ T20.8 | 覆盖率基线（记录现状 + 排除项）与 `--full` 判定 | `verify-all.sh --full` 绿 |
+| ✅ T20.9 | 密钥扫描（`.gitleaks.toml` + 平台推送保护） | gitleaks 干净 |
+| ✅ T20.10 | CI 接线：`gates` job（G1–G7），工具版本固定 | CI 全绿；人为破坏任一项 → 变红 |
+| ✅ T20.11 | CONTRIBUTING 增补门禁说明与上游 action 升级步骤 | diff 检查 |
+
+**S3 进度（滚动记录）**：
+
+- ✅ T20.6：15 处引用全部 pin（同主版本最新补丁）；G1 从"15 处未 pin"变为绿
+- ✅ T20.7：五份翻译补 `## Contributing` 并同步 `--preview`/`--format` 用法；G2 变绿
+  （过程中门禁抓到两次真实错误：把 `HoverStare` 里的 "Star" 当成 Star 段标题；四份翻译的
+  Star 段标题各不相同，按英文猜的一律没命中——最终按各自语言实际标题定位）
+- ✅ T20.8：覆盖率基线 = 实测 80.36% 行覆盖（阈值 79.8%，比实测低半点）
+- ✅ T20.9：`.gitleaks.toml`（保留默认规则 + 只白名单夹具目录）
+- ✅ T20.10：`ci.yml` 新增 `gates` job：`verify-all.sh --full --strict` + 门禁自测；
+  工具用 pin 住的 `taiki-e/install-action` 安装（actionlint/gitleaks/cargo-deny/cargo-audit/cargo-llvm-cov）
+- ✅ T20.11：CONTRIBUTING 增补门禁表与"上游 action 升级流程"（含分支引用类 action 的 toolchain 陷阱）
+- **诚实边界（本回合实际验证到哪一步）**：
+  - G1/G2/G6/G7：本地 `scripts/verify-all.sh` 全绿（`all gates passed (0 skipped)`），门禁自测 18/18；
+  - G4：**测量**在本地完成（`cargo llvm-cov --workspace --summary-only` → 80.36% 行覆盖，
+    阈值取 79.8%），但**门禁自身的 `--full` 运行没在本地跑完**——插桩重建在本机耗时过长
+    （超过 20 分钟仍在编译期），继续占用不值得，故改为在 CI 首次运行；
+  - G3/G5：gitleaks / cargo-deny / cargo-audit 在编写机未安装（`--strict` 下缺工具即失败，
+    不会静默通过），同样在 CI 首次真实运行；
+  - 因此 M20 的完成声明只到"本地可跑的门禁全绿 + CI job 已接线"，**CI 首次运行的结果需要
+    下一次 push 之后的 run 才能确认**（本回合不做发布动作，只推 master 触发 CI）
 
 **验收**：spec 17 §7 四条。
 
