@@ -42,6 +42,10 @@ pub struct Config {
     pub select_strict: bool,
     /// Merge deterministic sibling files into one review unit (spec 14 §1).
     pub group_units: bool,
+    /// Inject language rule packs into the review prompt (spec 15 §8).
+    pub rule_packs: bool,
+    /// Most packs injected for one file (spec 15 §8).
+    pub max_rule_packs: usize,
     pub instructions: String,
     /// Whether to set temperature on requests (some endpoints only accept the
     /// default; when false the field is not sent)
@@ -488,6 +492,8 @@ struct TomlConfig {
     report_coverage: Option<bool>,
     select_strict: Option<bool>,
     group_units: Option<bool>,
+    rule_packs: Option<bool>,
+    max_rule_packs: Option<usize>,
     instructions: Option<String>,
     set_temperature: Option<bool>,
     thinking: Option<String>,
@@ -783,6 +789,8 @@ impl Config {
             report_coverage: t.report_coverage.unwrap_or(true),
             select_strict: t.select_strict.unwrap_or(false),
             group_units: t.group_units.unwrap_or(false),
+            rule_packs: t.rule_packs.unwrap_or(true),
+            max_rule_packs: t.max_rule_packs.unwrap_or(2),
             instructions: t.instructions.unwrap_or_default(),
             set_temperature: t.set_temperature.unwrap_or(true),
             reasoning,

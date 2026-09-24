@@ -1,0 +1,38 @@
+{
+  "id": "matlab",
+  "version": "1",
+  "language": "MATLAB",
+  "scope": [
+    "**/*.m"
+  ],
+  "checks": [
+    {
+      "title": "Indexing",
+      "items": [
+        "1-based off-by-one when translating from 0-based code.",
+        "Linear indexing into a matrix whose shape is not guaranteed.",
+        "Growing an array inside a loop without preallocation."
+      ]
+    },
+    {
+      "title": "Numerics",
+      "items": [
+        "`==` on floating point results; `eps` not used where it matters.",
+        "Divide-by-zero producing `Inf`/`NaN` that propagates silently.",
+        "Integer types saturating without a warned conversion."
+      ]
+    }
+  ],
+  "examples": [
+    {
+      "positive": false,
+      "note": "explicit shape and preallocation",
+      "code": "n = numel(x);\nout = zeros(1, n);\nfor k = 1:n\n    out(k) = f(x(k));\nend"
+    },
+    {
+      "positive": true,
+      "note": "grows in the loop and divides without a guard",
+      "code": "for k = 1:numel(x)\n    out(k) = f(x(k)) / (x(k) - x(1));\nend"
+    }
+  ]
+}

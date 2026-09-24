@@ -1,0 +1,46 @@
+{
+  "id": "python",
+  "version": "1",
+  "language": "Python",
+  "scope": [
+    "**/*.{py,pyi,ipynb}"
+  ],
+  "checks": [
+    {
+      "title": "Classic defects",
+      "items": [
+        "Mutable default arguments (`def f(x=[])`).",
+        "`except:`/`except Exception: pass` that swallows failures, and bare `except` around I/O.",
+        "Late-binding closures over loop variables."
+      ]
+    },
+    {
+      "title": "Resources and concurrency",
+      "items": [
+        "Files/sockets/connections without `with` (or `try/finally`).",
+        "Threads/tasks started without a join/cancel path; shared state mutated without a lock.",
+        "Blocking calls inside `async def`."
+      ]
+    },
+    {
+      "title": "Data handling",
+      "items": [
+        "`int()`/`float()`/`datetime` parsing on external input without handling the error.",
+        "`pickle`/`yaml.load` on untrusted data (arbitrary code execution).",
+        "Equality on floats where an epsilon is required."
+      ]
+    }
+  ],
+  "examples": [
+    {
+      "positive": false,
+      "note": "explicit, bounded failure",
+      "code": "def parse(raw: str) -> int:\n    try:\n        return int(raw)\n    except ValueError as e:\n        raise BadInput(raw) from e"
+    },
+    {
+      "positive": true,
+      "note": "mutable default shared across calls",
+      "code": "def add(item, items=[]):\n    items.append(item)\n    return items"
+    }
+  ]
+}

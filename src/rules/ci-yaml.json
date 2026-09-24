@@ -1,0 +1,49 @@
+{
+  "id": "ci-yaml",
+  "version": "1",
+  "language": "CI / deployment YAML",
+  "scope": [
+    "**/.github/workflows/*.{yml,yaml}",
+    "**/.gitlab-ci.yml",
+    "**/Dockerfile",
+    "**/docker-compose*.{yml,yaml}"
+  ],
+  "checks": [
+    {
+      "title": "Supply chain",
+      "items": [
+        "Unpinned action references (`uses: owner/repo@v1`) — a moved tag changes what runs inside a pinned consumer.",
+        "`curl | sh` style installs without a checksum.",
+        "Images without a digest or an explicit tag."
+      ]
+    },
+    {
+      "title": "Secrets and permissions",
+      "items": [
+        "`permissions:` missing on a workflow that does not need write access.",
+        "Secrets echoed into logs (`set -x`, `echo ${{ secrets.* }}`).",
+        "Untrusted context interpolated into `run:` (`${{ github.event.* }}`, PR titles, branch names) — script injection."
+      ]
+    },
+    {
+      "title": "Trigger safety",
+      "items": [
+        "`pull_request_target` combined with checking out and running PR code.",
+        "`workflow_run` that trusts artifacts from a fork.",
+        "Missing `concurrency` on long jobs that can pile up."
+      ]
+    }
+  ],
+  "examples": [
+    {
+      "positive": false,
+      "note": "pinned with a version comment, permissions declared",
+      "code": "permissions:\n  contents: read\nsteps:\n  - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2"
+    },
+    {
+      "positive": true,
+      "note": "floating tag plus a secret in the shell",
+      "code": "steps:\n  - uses: actions/checkout@v4\n  - run: echo \"${{ secrets.TOKEN }}\" > /tmp/t"
+    }
+  ]
+}

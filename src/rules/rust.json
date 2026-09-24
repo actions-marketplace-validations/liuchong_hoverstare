@@ -1,0 +1,47 @@
+{
+  "id": "rust",
+  "version": "1",
+  "language": "Rust",
+  "scope": [
+    "**/*.rs",
+    "**/Cargo.toml"
+  ],
+  "checks": [
+    {
+      "title": "Panic and error surfaces",
+      "items": [
+        "`unwrap`/`expect`/indexing/slicing on values that can come from input, parsing, I/O or a lock: prefer `?` or an explicit error path.",
+        "Arithmetic that can overflow in release builds (`checked_*`/`saturating_*` where the value is external).",
+        "`panic!`/`todo!`/`unimplemented!` in a path reachable from a request, event or CLI argument."
+      ]
+    },
+    {
+      "title": "Concurrency and async",
+      "items": [
+        "Blocking calls (`std::thread::sleep`, sync I/O, `std::sync::Mutex` held across `.await`) inside async code.",
+        "Lock ordering, `RwLock` upgrade attempts, and locks held while calling out to user code.",
+        "`Send`/`Sync` assumptions on types that wrap `Rc`, `RefCell` or raw pointers."
+      ]
+    },
+    {
+      "title": "Ownership and API contracts",
+      "items": [
+        "Functions that silently clone to satisfy the borrow checker in a hot path.",
+        "`as` casts that truncate (`u64 as u32`) where the value is external.",
+        "Public API changes that break callers without a compatibility story."
+      ]
+    }
+  ],
+  "examples": [
+    {
+      "positive": false,
+      "note": "checked error path instead of unwrap",
+      "code": "fn load(p: &Path) -> anyhow::Result<Config> {\n    let text = std::fs::read_to_string(p)?;\n    Ok(toml::from_str(&text)?)\n}"
+    },
+    {
+      "positive": true,
+      "note": "unwrap on external input panics on the first malformed file",
+      "code": "fn load(p: &Path) -> Config {\n    let text = std::fs::read_to_string(p).unwrap();\n    toml::from_str(&text).unwrap()\n}"
+    }
+  ]
+}

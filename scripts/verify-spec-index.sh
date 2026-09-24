@@ -45,6 +45,17 @@ for entry in src/*.rs src/*/; do
   name="$(basename "$entry")"
   if [ -d "$entry" ]; then
     name="${name%/}"
+    if [ ! -f "$entry/mod.rs" ]; then
+      # A directory without mod.rs is a data directory (rule packs, fixtures),
+      # not a module. It must not contain Rust files: those would be modules
+      # nobody declared, and then nobody would know which spec they implement.
+      stray="$(find "$entry" -maxdepth 1 -name '*.rs' -print -quit)"
+      if [ -n "$stray" ]; then
+        printf '%s: data directory contains Rust files (%s) but no mod.rs\n' "$entry" "$stray"
+        status=1
+      fi
+      continue
+    fi
     file="$entry/mod.rs"
   else
     name="${name%.rs}"

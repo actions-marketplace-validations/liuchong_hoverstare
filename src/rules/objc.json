@@ -1,0 +1,38 @@
+{
+  "id": "objc",
+  "version": "1",
+  "language": "Objective-C",
+  "scope": [
+    "**/*.m",
+    "**/*.mm"
+  ],
+  "checks": [
+    {
+      "title": "Memory",
+      "items": [
+        "`retain`/`release` imbalance under manual reference counting; `__weak` used without a strong check.",
+        "Block captures of `self` creating a retain cycle (`self` captured strongly in a long-lived block)."
+      ]
+    },
+    {
+      "title": "Runtime",
+      "items": [
+        "Messaging a possibly-nil pointer where the result is dereferenced (a nil return silently becomes 0/nil).",
+        "Selectors performed without `respondsToSelector:` on a protocol-typed object.",
+        "Dictionary subscripting with a nil key."
+      ]
+    }
+  ],
+  "examples": [
+    {
+      "positive": false,
+      "note": "nil-tolerant",
+      "code": "NSString *name = obj.name ?: @\"\";"
+    },
+    {
+      "positive": true,
+      "note": "nil message becomes 0, hiding the failure",
+      "code": "NSInteger n = [obj computeCount];\nNSLog(@\"%ld\", 100 / n);"
+    }
+  ]
+}

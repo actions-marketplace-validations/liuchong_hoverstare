@@ -206,6 +206,23 @@ SelectOptions / 成组）、`--preview`（人类可读 + JSON）、覆盖声明�
 | T18.6 | `rules list` / `rules check <path>` 子命令（只读、免 LLM 凭据） | 命令级测试 |
 | T18.7 | 配置：`rule_packs`、`max_rule_packs` + 校验文案 | 配置单测 |
 
+**S2b 进度（滚动记录）**：
+
+- ✅ T18.1–T18.7 全部交付：`src/rules.rs` + `src/rules/*.json`（8 个内置包，含正反样例）、
+  匹配（first match wins → 专指性 → 多包上限 → default）、歧义嗅探（`.m` 排他解析）、
+  渲染（单包与总量字节上限 + 显式截断标记）、`rules list` / `rules check`、
+  配置 `rule_packs` / `max_rule_packs`、提示注入（`[LANGUAGE RULES]` + 权威声明）
+- 实现中单测抓到两处真实缺陷：① 歧义扩展名**同时**注入了 matlab 与 objc
+  （"哪个规则生效"必须只有一个答案，已改为排他解析）；② 截断路径未被覆盖
+  （`render_with_budget` 让预算可注入后才测得到）
+- 现场验证（真实二进制、无模型凭据）：`rules list` 列出 8 个包；`rules check src/pipeline.rs`
+  → rust；同一目录下 `objc_style.m`（含 `#import`）→ objc 且标注"由内容嗅探判定"，
+  `math_style.m` → matlab，**不存在的文件** → matlab 且不声称嗅探过
+- 注入生效由管线测试锁定：`run` 注入含 `[LANGUAGE RULES]` 与 Rust 检查点的系统提示，
+  `rule_packs = false` 时该块整体消失
+- G7 门禁因此增强：`src/` 下的目录只有含 `mod.rs` 才算模块；不含 `mod.rs` 的目录必须是
+  纯数据目录（内含 `.rs` 即失败）——否则"未声明的模块"会漏过 spec 一致性检查
+
 **验收**：spec 15 §12 四条。
 
 > S2a 与 S2b 的写集重叠很小（都碰 `config.rs`/`i18n.rs`）：**不建议并行改同一文件**，

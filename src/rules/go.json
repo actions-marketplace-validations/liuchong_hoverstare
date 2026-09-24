@@ -1,0 +1,46 @@
+{
+  "id": "go",
+  "version": "1",
+  "language": "Go",
+  "scope": [
+    "**/*.go",
+    "**/go.mod"
+  ],
+  "checks": [
+    {
+      "title": "Error handling",
+      "items": [
+        "Ignored `err` (`_ =` or missing check) on I/O, network, or parsing calls.",
+        "`err` shadowed inside an `if`/`for` block so the outer variable stays nil.",
+        "Wrapping that loses the original (`fmt.Errorf` without `%w`) where callers need `errors.Is`."
+      ]
+    },
+    {
+      "title": "Concurrency",
+      "items": [
+        "Goroutines started without a way to stop them (no `context.Context` or done channel).",
+        "`defer` inside a loop that accumulates until the function returns.",
+        "Loop variables captured by a goroutine or closure (pre-1.22 semantics)."
+      ]
+    },
+    {
+      "title": "Resources and boundaries",
+      "items": [
+        "`os.Open`/`http.Response.Body`/`sql.Rows` without `Close`.",
+        "Unbounded slice growth from external input; missing limits on request bodies."
+      ]
+    }
+  ],
+  "examples": [
+    {
+      "positive": false,
+      "note": "response body always closed, error returned",
+      "code": "resp, err := c.Do(req)\nif err != nil { return err }\ndefer resp.Body.Close()"
+    },
+    {
+      "positive": true,
+      "note": "closed only on the happy path: leaks on error",
+      "code": "resp, err := c.Do(req)\nif err != nil { return err }\nbody, _ := io.ReadAll(resp.Body)"
+    }
+  ]
+}

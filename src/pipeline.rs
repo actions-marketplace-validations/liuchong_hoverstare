@@ -91,6 +91,11 @@ pub async fn run(
     };
     let verify = if small_diff { true } else { cfg.verify };
 
+    // Language rule packs (spec 15 §4). Computed once per run, not per pass: the
+    // block describes the change set, so every pass must see the same one.
+    let rules_block = build_rules_block(cfg, parsed, shared).await;
+    let rules_block = rules_block.as_deref();
+
     // Straight-through path (spec 05: passes=1 and no verify is equivalent to
     // having no pipeline)
     if passes == 1 && !verify {
@@ -103,6 +108,7 @@ pub async fn run(
             shared,
             mode,
             instructions,
+            rules_block,
         )
         .await?;
         return Ok(PipelineOutcome {
@@ -130,6 +136,7 @@ pub async fn run(
                 shared,
                 mode,
                 instructions,
+                rules_block,
                 &extras[i],
                 cfg.temp(LENSES[i].temp),
             )
@@ -437,6 +444,37 @@ async fn verify_finding(
 // Single call and fault-tolerance pipeline (spec 04)
 // ---------------------------------------------------------------------------
 
+/// Build the `[LANGUAGE RULES]` block for the change set (spec 15 §4).
+///
+/// Only ambiguous extensions need their content, so only those heads are read —
+/// through the same sandbox as every other file read. A read that fails leaves
+/// the declared pack in place: an unreadable file never silently changes which
+/// checkpoints apply, it just means no sniff happened.
+async fn build_rules_block(
+    cfg: &Config,
+    parsed: &ParsedDiff,
+    shared: &Arc<ToolShared>,
+) -> Option<String> {
+    if !cfg.rule_packs {
+        return None;
+    }
+    let paths: Vec<&str> = parsed.files.iter().map(|f| f.path.as_str()).collect();
+    let mut heads: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    for path in &paths {
+        if !crate::rules::needs_sniff(path) {
+            continue;
+        }
+        let head = crate::agent::tools::read_file(shared, path, Some(1), Some(40)).await;
+        heads.insert((*path).to_string(), head);
+    }
+    let resolutions = crate::rules::resolve_for_paths(
+        paths.iter().copied(),
+        |path| heads.get(path).cloned(),
+        cfg.max_rule_packs,
+    );
+    crate::rules::render(&resolutions)
+}
+
 /// Single analysis call (no retries, for multi-pass use; the focus paragraph is
 /// appended to the system prompt)
 #[allow(clippy::too_many_arguments)]
@@ -449,11 +487,12 @@ async fn single_shot(
     shared: &Arc<ToolShared>,
     mode: &ReviewMode<'_>,
     instructions: &RepoInstructions,
+    rules_block: Option<&str>,
     extra_system: &str,
     temperature: Option<f64>,
 ) -> anyhow::Result<(AnalysisResult, Usage)> {
     let req = ReviewRequest {
-        system_prompt: prompt::system_prompt(cfg, instructions) + extra_system,
+        system_prompt: prompt::system_prompt(cfg, instructions, rules_block) + extra_system,
         user_prompt: prompt::user_prompt(diff_text, parsed, cfg, truncated_files, mode),
         tools: ToolRegistry {
             shared: Some(shared.clone()),
@@ -488,6 +527,7 @@ pub async fn analyze_with_backend(
     shared: &Arc<ToolShared>,
     mode: &ReviewMode<'_>,
     instructions: &RepoInstructions,
+    rules_block: Option<&str>,
 ) -> anyhow::Result<(AnalysisResult, UsageTotal)> {
     let mut last_err: Option<anyhow::Error> = None;
     // Every provider call counts, including failed attempts and the reformat
@@ -511,6 +551,7 @@ pub async fn analyze_with_backend(
             shared,
             mode,
             instructions,
+            rules_block,
         )
         .await
         {
@@ -561,9 +602,10 @@ async fn single_attempt(
     shared: &Arc<ToolShared>,
     mode: &ReviewMode<'_>,
     instructions: &RepoInstructions,
+    rules_block: Option<&str>,
 ) -> anyhow::Result<crate::agent::ReviewRun> {
     let req = ReviewRequest {
-        system_prompt: prompt::system_prompt(cfg, instructions),
+        system_prompt: prompt::system_prompt(cfg, instructions, rules_block),
         user_prompt: prompt::user_prompt(diff_text, parsed, cfg, truncated_files, mode),
         tools: ToolRegistry {
             shared: Some(shared.clone()),
@@ -627,6 +669,9 @@ mod tests {
         calls: AtomicUsize,
         reformat_calls: AtomicUsize,
         last_verify_output: Mutex<Option<&'static str>>,
+        /// Last system prompt seen: the rule-pack block is only observable from
+        /// inside the request, so a test has to capture it.
+        last_system_prompt: Mutex<Option<String>>,
     }
 
     impl FakeBackend {
@@ -638,6 +683,7 @@ mod tests {
                 last_verify_output: Mutex::new(Some(
                     r#"{"verdict":"confirmed","confidence":0.9,"reason":"ok"}"#,
                 )),
+                last_system_prompt: Mutex::new(None),
             }
         }
     }
@@ -645,6 +691,7 @@ mod tests {
     #[async_trait::async_trait]
     impl AgentBackend for FakeBackend {
         async fn review(&self, req: ReviewRequest) -> Result<ReviewRun, AgentError> {
+            *self.last_system_prompt.lock().unwrap() = Some(req.system_prompt.clone());
             // verifier call (system contains "code-review verifier")
             if req.system_prompt.contains("code-review verifier") {
                 let out = self.last_verify_output.lock().unwrap().take();
@@ -837,6 +884,7 @@ mod tests {
                     .into_boxed_str(),
                 )),
             ]),
+            last_system_prompt: Mutex::new(None),
             calls: AtomicUsize::new(0),
             reformat_calls: AtomicUsize::new(0),
             last_verify_output: Mutex::new(Some(
@@ -984,6 +1032,7 @@ mod tests {
             &shared(),
             &mode(),
             &ins(),
+            None,
         )
         .await
         .unwrap();
@@ -1007,6 +1056,7 @@ mod tests {
             &shared(),
             &mode(),
             &ins(),
+            None,
         )
         .await
         .unwrap();
@@ -1038,6 +1088,7 @@ mod tests {
             &shared(),
             &mode(),
             &ins(),
+            None,
         )
         .await;
         assert!(r.is_err());
@@ -1057,6 +1108,7 @@ mod tests {
             &shared(),
             &mode(),
             &ins(),
+            None,
         )
         .await
         .unwrap();
@@ -1065,6 +1117,68 @@ mod tests {
         // The call that failed at the backend level burned no reported tokens;
         // only the successful one is counted.
         assert_eq!(usage.calls, 1);
+    }
+
+    #[tokio::test]
+    async fn rule_packs_reach_the_review_prompt_and_can_be_switched_off() {
+        // The block is built by `run` (from the change set), so the test has to
+        // go through `run` rather than through a single backend call.
+        let (parsed, text) = diff_input(100);
+        let one = r#"{"findings":[{"file":"src/a.rs","line":2,"severity":"high","title":"t","description":"d"}],"summary":"s"}"#;
+
+        let backend = FakeBackend::new(vec![Ok(one), Ok(one), Ok(one)]);
+        run(
+            &backend,
+            &cfg(),
+            &parsed,
+            &text,
+            &[],
+            &shared(),
+            &mode(),
+            &ins(),
+        )
+        .await
+        .unwrap();
+        let prompt = backend
+            .last_system_prompt
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("the fake backend sees every request");
+        assert!(
+            prompt.contains(crate::rules::RULES_HEADER),
+            "the rule block must be injected: {prompt}"
+        );
+        assert!(prompt.contains(crate::rules::RULES_PRECEDENCE_NOTE));
+        assert!(
+            prompt.contains("Rust"),
+            "the .rs checkpoints must be present"
+        );
+
+        let mut off = cfg();
+        off.rule_packs = false;
+        let backend = FakeBackend::new(vec![Ok(one), Ok(one), Ok(one)]);
+        run(
+            &backend,
+            &off,
+            &parsed,
+            &text,
+            &[],
+            &shared(),
+            &mode(),
+            &ins(),
+        )
+        .await
+        .unwrap();
+        assert!(
+            backend
+                .last_system_prompt
+                .lock()
+                .unwrap()
+                .as_deref()
+                .is_some_and(|p| !p.contains(crate::rules::RULES_HEADER)),
+            "rule_packs = false must remove the block entirely"
+        );
     }
 
     #[tokio::test]

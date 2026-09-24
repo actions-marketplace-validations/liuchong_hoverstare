@@ -19,6 +19,7 @@ pub mod output;
 pub mod pipeline;
 pub mod prompt;
 pub mod report;
+pub mod rules;
 pub mod sanitize;
 pub mod serve;
 pub mod state;

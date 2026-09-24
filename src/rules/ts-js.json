@@ -1,0 +1,46 @@
+{
+  "id": "ts-js",
+  "version": "1",
+  "language": "TypeScript / JavaScript",
+  "scope": [
+    "**/*.{ts,tsx,js,jsx,mjs,cjs}"
+  ],
+  "checks": [
+    {
+      "title": "Async correctness",
+      "items": [
+        "Floating promises: an async call whose rejection nobody observes (missing `await`, `void`, `.catch`).",
+        "`await` inside `forEach` (callbacks are not awaited).",
+        "Missing cancellation/timeouts on network calls; unhandled `AbortSignal`."
+      ]
+    },
+    {
+      "title": "Value and type traps",
+      "items": [
+        "`==`/`!=` where coercion can change meaning; `NaN` comparisons; `typeof null`.",
+        "Optional chaining that hides a missing required field instead of surfacing it.",
+        "`JSON.parse` on untrusted input without validation of the shape."
+      ]
+    },
+    {
+      "title": "Runtime boundaries",
+      "items": [
+        "Prototype pollution via merging untrusted objects (`Object.assign`/spread into a prototype chain).",
+        "`innerHTML`/`dangerouslySetInnerHTML` with interpolated data.",
+        "Array index arithmetic on user-controlled lengths."
+      ]
+    }
+  ],
+  "examples": [
+    {
+      "positive": false,
+      "note": "rejection observed",
+      "code": "await Promise.all(items.map(async (i) => {\n  await save(i);\n}));"
+    },
+    {
+      "positive": true,
+      "note": "floating promise: failures vanish",
+      "code": "items.forEach(async (i) => {\n  await save(i);\n});"
+    }
+  ]
+}

@@ -174,10 +174,10 @@ merge = ["write"]
 | M15 | 自驱动队列：严格串行、失败即停、合并门与 `queue` 命令 | ✅ |
 | M16 | 提交身份与签名、流程级 pin、上下文压缩与缓存可观测 | ✅ |
 | M17 | 审查单元与覆盖契约：确定性选择、零成本预览、覆盖账本、覆盖声明、严格模式、成组（spec 14） | ✅ |
-| M18 | 语言规则包：按路径命中、注入契约、`rules check`（spec 15） | ⏳ 计划中 |
+| M18 | 语言规则包：按路径命中、歧义嗅探、注入契约、`rules check`（spec 15） | ✅ |
 | M19 | 输出契约：JSON 与 SARIF 出口、usage 聚合（spec 16） | ✅ |
 | M20 | 工程门禁：引用 pin、文档结构、依赖审计、覆盖率、密钥扫描（spec 17） | ⏳ 计划中 |
 
-**当前状态**：M1-M16 全部完成；**M17 已完成**（spec 14 验收逐条通过，见施工计划）；**M19 已完成**；M18、M20 的 spec 已定稿、实现待做。`cargo test --workspace` 214 项（单元 + httpmock 合约），
+**当前状态**：M1-M16 全部完成；**M17 已完成**（spec 14 验收逐条通过，见施工计划）；**M18、M19 已完成**（M20 的脚本已就位，剩一次性收尾与 CI 接线）。`cargo test --workspace` 273 项（单元 + httpmock 合约 + 端到端契约测试），
 `cargo clippy --all-targets -D warnings` 与 `cargo fmt --check` 干净，CI 另跑
 actionlint（workflow 文件本身的有效性）。

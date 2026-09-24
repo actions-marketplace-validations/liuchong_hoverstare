@@ -1,0 +1,36 @@
+{
+  "id": "default",
+  "version": "1",
+  "language": "General",
+  "scope": [],
+  "checks": [
+    {
+      "title": "Correctness",
+      "items": [
+        "Off-by-one in boundary handling (empty input, single element, end of range).",
+        "Error paths that continue with a partially built value.",
+        "Resource leaks on the error path (opened but not closed)."
+      ]
+    },
+    {
+      "title": "Change safety",
+      "items": [
+        "Callers outside the diff depend on the changed signature, behavior or exit code.",
+        "Concurrency assumptions (ordering, visibility, single writer) that the change breaks.",
+        "Input validation removed or relaxed without a compensating check."
+      ]
+    }
+  ],
+  "examples": [
+    {
+      "positive": false,
+      "note": "bounds checked before indexing",
+      "code": "if (!buf || len == 0u) return ERR_EMPTY;"
+    },
+    {
+      "positive": true,
+      "note": "dereferences before the empty check",
+      "code": "size_t n = buf->len;\nif (n == 0u) return ERR_EMPTY;"
+    }
+  ]
+}

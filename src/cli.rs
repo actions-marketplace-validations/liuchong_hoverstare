@@ -31,8 +31,30 @@ pub enum Command {
     Develop(DevelopArgs),
     /// Run as a webhook service (optional self-hosted, spec 10)
     Serve(ServeArgs),
+    /// Inspect the built-in language rule packs (read-only, spec 15 §5)
+    Rules(RulesArgs),
     /// Show help and exit (works without LLM credentials, issue #6)
     Help,
+}
+
+#[derive(Args)]
+pub struct RulesArgs {
+    #[command(subcommand)]
+    pub cmd: RulesCommand,
+}
+
+#[derive(Subcommand)]
+pub enum RulesCommand {
+    /// List the built-in language rule packs
+    List,
+    /// Show which packs a path resolves to
+    Check(RulesCheckArgs),
+}
+
+#[derive(Args)]
+pub struct RulesCheckArgs {
+    /// Repository-relative path, e.g. src/main.rs
+    pub path: String,
 }
 
 #[derive(Args)]
@@ -173,6 +195,7 @@ pub async fn run() {
         Command::Mention => run_mention().await,
         Command::Develop(develop_args) => run_develop(develop_args).await,
         Command::Serve(serve_args) => run_serve(serve_args).await,
+        Command::Rules(rules) => run_rules(rules),
         Command::Help => run_help(),
     };
     std::process::exit(code);
@@ -186,6 +209,87 @@ fn load_config() -> Result<config::Config, i32> {
 }
 
 /// Print localized help to stdout without loading config (issue #6)
+/// `hoverstare rules list|check` (spec 15 §5): read-only, no model credentials,
+/// no platform calls. It answers "which checkpoints would apply to this file",
+/// which is the same question the run asks, through the same resolver.
+fn run_rules(args: RulesArgs) -> i32 {
+    let cfg = match config::Config::load_read_only() {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::error!("config error: {e:#}");
+            return 1;
+        }
+    };
+    let t = i18n::T::new(cfg.language);
+    match args.cmd {
+        RulesCommand::List => {
+            let packs: Vec<&crate::rules::RulePack> = crate::rules::packs().collect();
+            println!("{}", t.rules_list_heading(packs.len()));
+            for pack in packs {
+                let scope = if pack.scope.is_empty() {
+                    "(fallback)".to_string()
+                } else {
+                    pack.scope.join(" ")
+                };
+                println!(
+                    "- {} v{} [{}] {}",
+                    pack.id, pack.version, pack.language, scope
+                );
+            }
+            0
+        }
+        RulesCommand::Check(check) => {
+            let head = read_head(&cfg.workspace, &check.path);
+            let hits = crate::rules::resolve(&check.path, head.as_deref(), cfg.max_rule_packs);
+            println!("{}", t.rules_check_heading(&check.path));
+            for hit in hits {
+                let Some(pack) = crate::rules::packs().find(|p| p.id == hit.pack_id) else {
+                    continue;
+                };
+                let note = if hit.sniffed {
+                    t.rules_sniff_note()
+                } else {
+                    ""
+                };
+                println!(
+                    "- {} v{} [{}] matched {}{note}",
+                    pack.id, pack.version, pack.language, hit.matched_pattern
+                );
+            }
+            0
+        }
+    }
+}
+
+/// Read the beginning of a workspace file for the ambiguity sniff. Bounded, and
+/// contained to the workspace: a diagnostic command must not become a file-read
+/// primitive for arbitrary paths.
+fn read_head(workspace: &std::path::Path, path: &str) -> Option<String> {
+    let candidate = workspace.join(path);
+    let base = lexical_normalize(workspace);
+    let resolved = lexical_normalize(&candidate);
+    if !resolved.starts_with(&base) {
+        return None;
+    }
+    let bytes = std::fs::read(&resolved).ok()?;
+    let limit = bytes.len().min(4096);
+    Some(String::from_utf8_lossy(&bytes[..limit]).into_owned())
+}
+
+fn lexical_normalize(path: &std::path::Path) -> std::path::PathBuf {
+    let mut out = std::path::PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::ParentDir => {
+                out.pop();
+            }
+            std::path::Component::CurDir => {}
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
+}
+
 fn run_help() -> i32 {
     let lang = i18n::Lang::resolve(std::env::var("HOVERSTARE_LANGUAGE").ok().as_deref(), None);
     println!("{}", i18n::T::new(lang).help_text());

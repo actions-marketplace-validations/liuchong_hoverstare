@@ -20,7 +20,11 @@ fn output_language_directive(lang: Lang) -> String {
 
 /// System prompt: the fixed contract (spec 04).
 /// `instructions`：仓库指令文件（spec 04 §repo-instructions），附加在不可覆盖核心规则之后。
-pub fn system_prompt(cfg: &Config, instructions: &RepoInstructions) -> String {
+pub fn system_prompt(
+    cfg: &Config,
+    instructions: &RepoInstructions,
+    rules_block: Option<&str>,
+) -> String {
     let mut s = String::from(
         r#"You are a senior software engineer performing a focused defect review of a GitHub pull request.
 
@@ -52,6 +56,14 @@ Your final reply MUST be exactly one JSON object: no prose, no explanation, no m
         s.push_str(cfg.instructions.trim());
     }
     s.push_str(&instructions.render());
+    // Language rule packs (spec 15 §4): checkpoints for the kinds of files under
+    // review. They sit after the repository instructions and before the language
+    // directive, and they say themselves that the core rules win.
+    if let Some(block) = rules_block {
+        s.push('\n');
+        s.push('\n');
+        s.push_str(block);
+    }
     s.push_str(&output_language_directive(cfg.language));
     s
 }

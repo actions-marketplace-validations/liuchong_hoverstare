@@ -221,6 +221,41 @@ impl T {
         }
     }
 
+    /// `rules list` heading (spec 15 §5). Identifiers inside stay as they are:
+    /// only the prose is localized.
+    pub fn rules_list_heading(&self, packs: usize) -> String {
+        match self.0 {
+            Lang::En => format!("Built-in rule packs ({packs})"),
+            Lang::ZhCn => format!("内置语言规则包（{packs}）"),
+            Lang::Ru => format!("Встроенные наборы правил ({packs})"),
+            Lang::Fr => format!("Jeux de règles intégrés ({packs})"),
+            Lang::De => format!("Integrierte Regelpakete ({packs})"),
+            Lang::Es => format!("Paquetes de reglas integrados ({packs})"),
+        }
+    }
+
+    pub fn rules_check_heading(&self, path: &str) -> String {
+        match self.0 {
+            Lang::En => format!("Rules for {path}"),
+            Lang::ZhCn => format!("{path} 命中的规则"),
+            Lang::Ru => format!("Правила для {path}"),
+            Lang::Fr => format!("Règles pour {path}"),
+            Lang::De => format!("Regeln für {path}"),
+            Lang::Es => format!("Reglas para {path}"),
+        }
+    }
+
+    pub fn rules_sniff_note(&self) -> &'static str {
+        match self.0 {
+            Lang::En => " (content sniff decided this)",
+            Lang::ZhCn => "（由内容嗅探判定）",
+            Lang::Ru => " (определено по содержимому)",
+            Lang::Fr => " (décidé par inspection du contenu)",
+            Lang::De => " (durch Inhaltsprüfung entschieden)",
+            Lang::Es => " (decidido por inspección del contenido)",
+        }
+    }
+
     pub fn clean_verdict(&self) -> &'static str {
         match self.0 {
             Lang::En => "✅ No defects found.",
@@ -655,6 +690,19 @@ mod tests {
                 .coverage_line(1, 2, 1, 0)
                 .starts_with("覆盖：1/2")
         );
+    }
+
+    #[test]
+    fn rules_labels_exist_in_every_language() {
+        for lang in [Lang::En, Lang::ZhCn, Lang::Ru, Lang::Fr, Lang::De, Lang::Es] {
+            let t = T::new(lang);
+            assert!(!t.rules_list_heading(8).is_empty(), "{lang:?}");
+            assert!(
+                t.rules_check_heading("src/a.m").contains("src/a.m"),
+                "{lang:?}"
+            );
+            assert!(!t.rules_sniff_note().trim().is_empty(), "{lang:?}");
+        }
     }
 
     #[test]

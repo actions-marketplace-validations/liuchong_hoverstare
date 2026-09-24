@@ -297,15 +297,16 @@ agentic 审查，把高置信度缺陷以行内评论发到 PR 上并跨 commit 
 
 **验收**：见 [spec 14 §10](14-review-unit.md)；逐条证据见 [施工计划](../docs/dev/m17-m20-plan.md#s1--m17-审查单元与覆盖契约)。
 
-### M18 — 语言规则包（计划中）
+### M18 — 语言规则包 ✅ 2026-09-24 完成
 
 **目标**：每份改动只注入与它相关的检查要点。
 
-- [ ] 规则包数据形态（id/version/scope/checks/examples）+ schema 校验单测
-- [ ] 匹配解析：first match wins、专指性排序、歧义嗅探与回退、多包上限
-- [ ] `[LANGUAGE RULES]` 注入契约（字节上限、不与核心规则/仓库指令冲突）
-- [ ] `hoverstare rules list` / `rules check <path>` 只读自检
-- [ ] 初始包：rust / go / ts-js / python / ci-yaml / default（含正反样例）
+- [x] 规则包数据形态（id/version/scope/checks/examples）+ schema 校验单测
+- [x] 匹配解析：first match wins、专指性排序、歧义嗅探与回退、多包上限
+- [x] `[LANGUAGE RULES]` 注入契约（字节上限、不与核心规则/仓库指令冲突）
+- [x] `hoverstare rules list` / `rules check <path>` 只读自检
+- [x] 初始包：rust / go / ts-js / python / ci-yaml / objc / matlab / default（含正反样例；
+      objc/matlab 是 `.m` 歧义批次的两个真实候选）
 
 **验收**：见 [spec 15 §12](15-rule-packs.md)。
 
