@@ -69,14 +69,33 @@ skip_or_fail() { # gate message hint
 
 have() { command -v "$1" >/dev/null 2>&1; }
 
+# Per-gate wall-clock limit. A gate that hangs must fail *as that gate*, with the
+# rest still running and the summary still printed — a job that produces no output
+# for fifteen minutes and then gets cancelled tells nobody anything (which is
+# exactly what the first CI run of this script did).
+TIMEOUT_BIN="$(command -v timeout || command -v gtimeout || true)"
+
+# timed <seconds> <command...> — 124 means "timed out", which every runner reports
+# as a failure of that one gate.
+timed() {
+  local secs="$1"
+  shift
+  printf -- '-- starting: %s (limit %ss)\n' "$*" "$secs"
+  if [ -n "$TIMEOUT_BIN" ]; then
+    "$TIMEOUT_BIN" "$secs" "$@"
+  else
+    "$@"
+  fi
+}
+
 # --- G1: external action references are pinned -----------------------------
 run_g1() {
-  if ./scripts/verify-action-pins.sh; then record G1 PASS ""; else record G1 FAIL "run scripts/verify-action-pins.sh"; fi
+  if timed 120 ./scripts/verify-action-pins.sh; then record G1 PASS ""; else record G1 FAIL "run scripts/verify-action-pins.sh"; fi
 }
 
 # --- G2: README heading structure ------------------------------------------
 run_g2() {
-  if ./scripts/check-doc-structure.sh; then record G2 PASS ""; else record G2 FAIL "run scripts/check-doc-structure.sh"; fi
+  if timed 120 ./scripts/check-doc-structure.sh; then record G2 PASS ""; else record G2 FAIL "run scripts/check-doc-structure.sh"; fi
 }
 
 # --- G3: dependency and license audit --------------------------------------
@@ -84,13 +103,13 @@ run_g3() {
   local ok=0 missing=()
   if have cargo-deny; then
     printf -- '--- G3: cargo deny check\n'
-    cargo deny check || ok=1
+    timed 600 cargo deny check || ok=1
   else
     missing+=("cargo-deny")
   fi
   if have cargo-audit; then
     printf -- '--- G3: cargo audit\n'
-    cargo audit || ok=1
+    timed 600 cargo audit || ok=1
   else
     missing+=("cargo-audit")
   fi
@@ -123,7 +142,7 @@ run_g4() {
     return
   fi
   printf -- '--- G4: cargo llvm-cov --fail-under-lines %s\n' "$min"
-  if cargo llvm-cov --workspace --fail-under-lines "$min"; then record G4 PASS ""; else record G4 FAIL "coverage below $min%"; fi
+  if timed 2400 cargo llvm-cov --workspace --fail-under-lines "$min"; then record G4 PASS ""; else record G4 FAIL "coverage below $min% (or the run timed out)"; fi
 }
 
 # --- G5: secret scan -------------------------------------------------------
@@ -135,7 +154,7 @@ run_g5() {
   local args=(detect --no-banner --redact)
   [ -f .gitleaks.toml ] && args+=(--config .gitleaks.toml)
   printf -- '--- G5: gitleaks %s\n' "${args[*]}"
-  if gitleaks "${args[@]}"; then record G5 PASS ""; else record G5 FAIL "gitleaks reported findings"; fi
+  if timed 600 gitleaks "${args[@]}"; then record G5 PASS ""; else record G5 FAIL "gitleaks reported findings (or timed out)"; fi
 }
 
 # --- G6: workflow and script lint -----------------------------------------
@@ -143,7 +162,7 @@ run_g6() {
   local ok=0 missing=()
   if have actionlint; then
     printf -- '--- G6: actionlint\n'
-    actionlint -color -shellcheck= || ok=1
+    timed 300 actionlint -color -shellcheck= || ok=1
   else
     missing+=("actionlint")
   fi
@@ -154,7 +173,7 @@ run_g6() {
       [ -n "$sh_file" ] && shells+=("$sh_file")
     done < <(ls scripts/*.sh scripts/tests/*.sh 2>/dev/null)
     if [ "${#shells[@]}" -gt 0 ]; then
-      shellcheck "${shells[@]}" || ok=1
+      timed 300 shellcheck "${shells[@]}" || ok=1
     fi
   else
     missing+=("shellcheck")
@@ -172,7 +191,7 @@ run_g6() {
 
 # --- G7: spec index and module/spec consistency ---------------------------
 run_g7() {
-  if ./scripts/verify-spec-index.sh; then record G7 PASS ""; else record G7 FAIL "run scripts/verify-spec-index.sh"; fi
+  if timed 60 ./scripts/verify-spec-index.sh; then record G7 PASS ""; else record G7 FAIL "run scripts/verify-spec-index.sh"; fi
 }
 
 printf '== HoverStare verification gates (spec 17)%s ==\n' "$( [ "$full" -eq 1 ] && printf ', --full' )"
