@@ -10,6 +10,9 @@
 #                   the two that need a toolchain and minutes, kept out of the
 #                   default path so a contributor gets fast feedback
 #   --strict      : a gate whose tool is missing counts as FAILED (CI uses this)
+#   --heavy-only  : run only G3 + G4 (the gates that need a toolchain and minutes);
+#                   CI runs these in their own job so they do not carry the tools
+#                   the fast set needs
 #   --list        : print the gate list and exit
 #
 # Gate scripts live next to this file; each prints its own diagnostics and
@@ -23,10 +26,12 @@ cd "$(dirname "$0")/.." || exit 1
 
 full=0
 strict=0
+heavy_only=0
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --full) full=1 ;;
     --strict) strict=1 ;;
+    --heavy-only) heavy_only=1 ;;
     --list)
       printf 'G1 action pins        scripts/verify-action-pins.sh\n'
       printf 'G2 doc structure      scripts/check-doc-structure.sh\n'
@@ -200,14 +205,19 @@ run_g7() {
 }
 
 printf '== HoverStare verification gates (spec 17)%s ==\n' "$( [ "$full" -eq 1 ] && printf ', --full' )"
-run_g1
-run_g2
-run_g5
-run_g7
-run_g6
-if [ "$full" -eq 1 ]; then
+if [ "$heavy_only" -eq 1 ]; then
   run_g3
   run_g4
+else
+  run_g1
+  run_g2
+  run_g5
+  run_g7
+  run_g6
+  if [ "$full" -eq 1 ]; then
+    run_g3
+    run_g4
+  fi
 fi
 
 failed=0

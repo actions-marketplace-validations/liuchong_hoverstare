@@ -127,6 +127,8 @@ if command -v timeout >/dev/null 2>&1 || command -v gtimeout >/dev/null 2>&1; th
   # (its tools may be absent locally, which --strict-less runs report as SKIP).
   "$bound" 120 ./scripts/verify-all.sh --full >"$tmp/full.txt" 2>&1
   expect_absent "verify-all --full does not hang before its first gate" "$tmp/full.txt" "timed out"
+  "$bound" 600 ./scripts/verify-all.sh --heavy-only >"$tmp/heavy.txt" 2>&1
+  expect_absent "verify-all --heavy-only terminates" "$tmp/heavy.txt" "timed out"
 else
   printf 'SKIP  flag termination cases (no timeout binary)\n'
 fi

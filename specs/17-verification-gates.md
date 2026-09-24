@@ -90,7 +90,9 @@
 
 ```
 scripts/verify-all.sh                  # 默认：G1 G2 G5 G6 G7（秒级到分钟级）
-scripts/verify-all.sh --full           # 追加 G3 G4（依赖审计 / 覆盖率，需要工具链与时间）
+scripts/verify-all.sh --full           # 默认集合 + G3 G4（依赖审计 / 覆盖率）
+scripts/verify-all.sh --heavy-only     # 只跑 G3 G4（CI 的重集合 job 用这个：
+                                       # 它不需要 actionlint/gitleaks，也就不装）
 scripts/verify-all.sh --strict         # 缺工具即算失败（CI 用这个）
 scripts/verify-all.sh --list           # 列出全部门禁
 scripts/tests/test-gates.sh            # 门禁自身的自测（正例/反例 fixture）
@@ -104,8 +106,9 @@ scripts/tests/test-gates.sh            # 门禁自身的自测（正例/反例 f
 - ✅ CI（M20 已接线）：`ci.yml` 用**两个** job，都阻塞：
   - `gates`（快）：`scripts/verify-all.sh --strict` + 门禁自测；工具只装 actionlint 与
     gitleaks（上游 release + sha256 校验）；
-  - `gates-heavy`：`scripts/verify-all.sh --full --strict`；装 cargo-deny / cargo-audit /
-    cargo-llvm-cov 与 `llvm-tools-preview`。
+  - `gates-heavy`：`scripts/verify-all.sh --heavy-only --strict`；装 cargo-deny / cargo-audit /
+    cargo-llvm-cov 与 `llvm-tools-preview`。两个 job 各自只装自己那半需要的工具——
+    重集合跑 `--full --strict` 会把"没装 actionlint/gitleaks"判成失败（首次接线时就是这样）。
   分开的理由是实测：把七个门禁塞进一个 job 时，首次运行超过 **60 分钟**仍未结束，且进行中的
   日志不可见——阻塞式门禁必须分层并带 `timeout-minutes`，否则它不是信号而是黑箱。
   **本地能跑的就是 CI 强制的**：同一个入口脚本。
@@ -131,7 +134,8 @@ scripts/tests/test-gates.sh            # 门禁自身的自测（正例/反例 f
 1. ✅ 已完成：`action.yml` 与四个 workflow 里的 15 处浮动引用改为 40 位 SHA + 来源注释
    （同主版本的最新补丁，不是顺手升大版本——升级是独立决定，流程写在 CONTRIBUTING）；
 2. ✅ 六份 README 结构对齐：五份翻译补 `## Contributing` 段并同步 `--preview`/`--format` 用法；
-3. ✅ 覆盖率基线：`scripts/coverage-baseline.txt` 记录实测 80.36% 行覆盖（M20 落地时），
+3. ✅ 覆盖率基线：`scripts/coverage-baseline.txt` 记录实测 80.36% 行覆盖（M20 落地时；
+   CI 首跑为 80.13%，同样在阈值之上），
    阈值 79.8%（比实测低半点为正常重构留余量；下调必须在文件里写明什么变得不可测）；
 4. ✅ 密钥扫描：`.gitleaks.toml`（保留默认规则，只给"夹具目录"加白名单——那里的 token 是
    故意的假值）；平台侧推送保护需在仓库设置里开启，属于运维动作；

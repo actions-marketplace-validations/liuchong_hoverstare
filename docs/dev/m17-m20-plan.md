@@ -255,7 +255,16 @@ SelectOptions / 成组）、`--preview`（人类可读 + JSON）、覆盖声明�
   `taiki-e/install-action` 的 binstall 回退只认 Rust crate（actionlint/gitleaks 都不在其中），
   改为从上游 release 装并核对 sha256——而且**校验和步骤要保留上游文件名**（`sha256sum -c`
   按记录名查找），这一段现在先在本地跑通再写进 workflow。
-  期间 CI **五次**红都不是环境运气，而是真实缺陷：测试依赖 CI 才有的 `GITHUB_ACTIONS`、
+- ✅ T20.8/T20.9 的**首次 CI 真实运行**结果（第六轮）：G4 PASS（80.13% ≥ 79.8%）、
+  G3 **抓到 2 个真实漏洞**（RUSTSEC-2026-0258 `h2`、RUSTSEC-2026-0285 `rustls`）——
+  已按补丁版本更新锁文件（h2 0.4.15→0.4.19、rustls 0.23.42→0.23.45，含 aws-lc-sys /
+  rustls-webpki 连带升级），`cargo deny check` 与 `cargo audit` 本地全绿、274 测试通过；
+  另把本仓库自身的 1PL 许可用 `[[licenses.clarify]]` 显式声明（之前是 "unlicensed" 报错），
+  并删掉一条从未命中的 `stringmetrics` 例外——门禁配置里"没用的例外"本身就是误导。
+  这一轮还修了 job 划分：重集合跑 `--full --strict` 会把"没装 actionlint/gitleaks"判失败，
+  新增强集合专用开关 `--heavy-only`（CI 两个 job 各自只装自己那半的工具）。
+
+  期间 CI **六次**红都不是环境运气，而是真实缺陷：测试依赖 CI 才有的 `GITHUB_ACTIONS`、
   `::group::` 标记写到了 stdout、两个工具装不上、校验和文件名不匹配，最后也是最关键的一条：
   `verify-all.sh` 的参数循环**漏了 `shift`**——`--strict` / `--full` 会让它无限空转（无输出、
   永不结束），而本地从来没跑过带参形式、自测也只覆盖 `--list` 与未知参数，于是一路漏到 CI。

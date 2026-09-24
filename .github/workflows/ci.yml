@@ -98,7 +98,7 @@ jobs:
         run: rustup component add llvm-tools-preview
 
       - name: Gates — heavy set (blocking)
-        run: scripts/verify-all.sh --full --strict
+        run: scripts/verify-all.sh --heavy-only --strict
 
   check:
     runs-on: ubuntu-latest

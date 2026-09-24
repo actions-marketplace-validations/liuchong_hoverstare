@@ -27,15 +27,22 @@ allow = [
   "Unlicense",
   "CDLA-Permissive-2.0",
   "BSL-1.0",
+  # Our own crates (see the clarify blocks below).
+  "LicenseRef-1PL",
 ]
 
-# `stringmetrics` (a dev-dependency of httpmock, so it never reaches the binary)
-# declares `license = "non-standard"` in its crate metadata while the repository
-# ships an Apache-2.0 LICENSE file (Copyright 2022 Trevor Gross). The exception
-# records that evidence instead of widening the global allow list.
-[[licenses.exceptions]]
-name = "stringmetrics"
-allow = ["Apache-2.0"]
+# This workspace's own crates carry a custom licence (1PL, see LICENSE) which is
+# not an SPDX identifier, so the expression is declared here instead of widening
+# the global allow list: third-party licences stay checked, ours is named.
+[[licenses.clarify]]
+name = "hoverstare"
+expression = "LicenseRef-1PL"
+license-files = [{ path = "LICENSE", hash = 0x6333e3fe }]
+
+[[licenses.clarify]]
+name = "bugbot"
+expression = "LicenseRef-1PL"
+license-files = [{ path = "LICENSE", hash = 0x6333e3fe }]
 
 [bans]
 # Several versions of the same crate are normal here (build/dev dependency
