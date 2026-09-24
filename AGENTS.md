@@ -290,6 +290,13 @@ cargo fmt && cargo clippy --workspace --all-targets -- -D warnings
     模板（j2/hbs）这些"清单与定义类"文件都不在旧表里。结论：判定"能不能审"要有自己的清单，
     并且必须拿真实 PR 跑一遍对照（默认 vs 严格）才能发现这类盲区。
 
+36. **"本地全绿"不等于"CI 全绿"，推送后必须看 run**：有一次改动本地
+    `cargo test` / `fmt` / `clippy` / 门禁全绿，推上去 CI 却红了——因为那条测试断言
+    `form == "cli"`，而 CI 会设 `GITHUB_ACTIONS=true`，子进程正确地报成 `action`。
+    两条规矩：(1) 测试不要依赖"只有某些环境才有"的变量，要么显式覆盖（`HOVERSTARE_FORM=cli`）、
+    要么把逻辑参数化后单测（`form_from(getter)`）；(2) `git push` 之后要
+    `gh run list` / `gh run watch` 确认这次 commit 的 run 结论，别只看本地。
+
 
 ## 7.5 Dogfood 验证手册（开发模式端到端怎么测）
 

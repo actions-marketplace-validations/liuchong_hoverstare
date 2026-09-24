@@ -1224,6 +1224,10 @@ async fn binary_keeps_stdout_clean_for_structured_output() {
         .env("OPENAI_BASE_URL", format!("{}/v1", provider.base_url()))
         .env("OPENAI_API_KEY", "test")
         .env("GITHUB_WORKSPACE", workspace.path())
+        // The child would otherwise report form="action" under GitHub Actions and
+        // "cli" locally; the assertion must not depend on where it runs. The
+        // precedence itself is unit-tested in `output::tests`.
+        .env("HOVERSTARE_FORM", "cli")
         .output()
         .expect("the hoverstare binary must be runnable");
 

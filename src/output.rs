@@ -46,10 +46,16 @@ impl OutputFormat {
 /// How this run reached us. Recorded in the document so a consumer can tell an
 /// Actions run from a self-hosted service run without guessing from the shape.
 pub fn form() -> &'static str {
-    if let Some(explicit) = std::env::var("HOVERSTARE_FORM")
-        .ok()
-        .filter(|v| !v.trim().is_empty())
-    {
+    form_from(|key| std::env::var(key).ok())
+}
+
+/// Same as [`form`], reading through a getter so the precedence is testable
+/// without touching the process environment (a test that depends on the
+/// environment only passes where that environment happens to exist — an
+/// assertion of `form == "cli"` failed in CI precisely because CI sets
+/// `GITHUB_ACTIONS`).
+pub fn form_from(get: impl Fn(&str) -> Option<String>) -> &'static str {
+    if let Some(explicit) = get("HOVERSTARE_FORM").filter(|v| !v.trim().is_empty()) {
         // Leaked: the value is a small fixed identifier, not a secret.
         return match explicit.as_str() {
             "serve" => "serve",
@@ -57,7 +63,7 @@ pub fn form() -> &'static str {
             _ => "action",
         };
     }
-    if std::env::var("GITHUB_ACTIONS").is_ok() {
+    if get("GITHUB_ACTIONS").is_some() {
         "action"
     } else {
         "cli"
@@ -651,6 +657,30 @@ mod tests {
             })
             .collect();
         CoverageLedger::freeze(&built)
+    }
+
+    #[test]
+    fn form_precedence_is_explicit_then_ci_then_local() {
+        let with = |pairs: &[(&str, &str)]| {
+            let map: std::collections::HashMap<String, String> = pairs
+                .iter()
+                .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+                .collect();
+            form_from(move |key| map.get(key).cloned())
+        };
+        assert_eq!(with(&[("HOVERSTARE_FORM", "serve")]), "serve");
+        assert_eq!(
+            with(&[("HOVERSTARE_FORM", "cli"), ("GITHUB_ACTIONS", "true")]),
+            "cli"
+        );
+        assert_eq!(
+            with(&[("HOVERSTARE_FORM", "  "), ("GITHUB_ACTIONS", "true")]),
+            "action"
+        );
+        assert_eq!(with(&[("GITHUB_ACTIONS", "true")]), "action");
+        assert_eq!(with(&[]), "cli");
+        // Anything unrecognised resolves to the Actions form, not to a made-up one.
+        assert_eq!(with(&[("HOVERSTARE_FORM", "wat")]), "action");
     }
 
     #[test]
