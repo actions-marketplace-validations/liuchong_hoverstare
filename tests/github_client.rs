@@ -1087,8 +1087,159 @@ async fn run_review_emits_the_json_contract() {
     assert_eq!(doc["coverage"]["covered"], 1);
     assert!(doc["resolutions"].as_array().unwrap().is_empty());
 
+    // Same run, SARIF format (spec 16 §3): the contract must hold for both
+    // renderers, and both must come out of the same run path.
+    let sarif_outcome = hoverstare::orchestrator::run_review(
+        &cfg,
+        &hoverstare::cli::ReviewArgs {
+            pr: Some(1),
+            repo: Some("o/r".into()),
+            format: hoverstare::output::OutputFormat::Sarif,
+            output: Some("out/result.sarif".to_string()),
+            ..Default::default()
+        },
+        false,
+    )
+    .await
+    .unwrap();
+    assert!(matches!(
+        sarif_outcome,
+        hoverstare::orchestrator::Outcome::Published { .. }
+    ));
+
+    let sarif_text = std::fs::read_to_string(workspace.path().join("out/result.sarif"))
+        .expect("the SARIF document must be written to the requested path");
+    let sarif: serde_json::Value = serde_json::from_str(&sarif_text).unwrap();
+    assert_eq!(sarif["version"], "2.1.0");
+    assert_eq!(sarif["runs"][0]["tool"]["driver"]["name"], "hoverstare");
+    assert_eq!(
+        sarif["runs"][0]["invocations"][0]["executionSuccessful"],
+        true
+    );
+    assert_eq!(sarif["runs"][0]["results"][0]["level"], "error");
+    assert_eq!(sarif["runs"][0]["results"][0]["ruleId"], "hoverstare/high");
+    assert_eq!(
+        sarif["runs"][0]["results"][0]["locations"][0]["physicalLocation"]["artifactLocation"]["uri"],
+        "src/a.rs"
+    );
+    assert_eq!(
+        sarif["runs"][0]["results"][0]["locations"][0]["physicalLocation"]["region"]["startLine"],
+        5
+    );
+    assert!(
+        sarif["runs"][0]["results"][0]["partialFingerprints"][hoverstare::output::FINGERPRINT_KEY]
+            .as_str()
+            .is_some_and(|fp| !fp.is_empty()),
+        "SARIF must carry the fingerprint used for cross-run dedup"
+    );
+
     unsafe {
         std::env::remove_var("OPENAI_BASE_URL");
         std::env::remove_var("GITHUB_WORKSPACE");
     }
+}
+
+/// T19.5（spec 16 §4.3）：`--format json` 时 stdout 必须是**一个可解析的 JSON 文档**，
+/// 日志一律走 stderr。
+///
+/// 这条测试刻意跑**真实二进制**（`CARGO_BIN_EXE_hoverstare`）而不是库函数：stdout/stderr
+/// 的分离是进程级行为，进程内断言看不到它。同时断言 stderr 非空——否则"stdout 干净"
+/// 也可能只是"根本没打日志"，那是另一种失败。
+#[tokio::test]
+async fn binary_keeps_stdout_clean_for_structured_output() {
+    let server = MockServer::start_async().await;
+    let provider = MockServer::start_async().await;
+    let workspace = tempfile::tempdir().unwrap();
+
+    let mut diff = String::from(
+        "diff --git a/src/a.rs b/src/a.rs\n--- a/src/a.rs\n+++ b/src/a.rs\n@@ -1,0 +1,60 @@\n",
+    );
+    for i in 1..=60 {
+        diff.push_str(&format!("+line {i}\n"));
+    }
+    server
+        .mock_async(|when, then| {
+            when.method(GET)
+                .path("/repos/o/r/pulls/1")
+                .header("accept", "application/vnd.github.v3.diff");
+            then.status(200).body(diff.clone());
+        })
+        .await;
+    server
+        .mock_async(|when, then| {
+            when.method(GET).path("/repos/o/r/pulls/1");
+            then.status(200).json_body(serde_json::json!({
+                "number": 1,
+                "head": {"sha": "abc123", "ref": "feat"},
+                "base": {"sha": "def456", "ref": "main"},
+                "draft": false,
+                "user": {"login": "dev"},
+                "author_association": "OWNER"
+            }));
+        })
+        .await;
+    server
+        .mock_async(|when, then| {
+            when.method(GET).path("/repos/o/r/pulls/1/reviews");
+            then.status(200).json_body(serde_json::json!([]));
+        })
+        .await;
+    server
+        .mock_async(|when, then| {
+            when.method(POST).path("/repos/o/r/pulls/1/reviews");
+            then.status(201).json_body(serde_json::json!({"id": 1}));
+        })
+        .await;
+    let completion = serde_json::json!({
+        "id": "1",
+        "object": "chat.completion",
+        "created": 1,
+        "model": "m",
+        "choices": [{
+            "index": 0,
+            "message": {
+                "role": "assistant",
+                "content": r#"{"findings":[],"summary":"clean"}"#
+            },
+            "finish_reason": "stop"
+        }],
+        "usage": {"prompt_tokens": 10, "completion_tokens": 2, "total_tokens": 12}
+    });
+    provider
+        .mock_async(|when, then| {
+            when.method(POST).path("/v1/chat/completions");
+            then.status(200).json_body(completion.clone());
+        })
+        .await;
+
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_hoverstare"))
+        .args(["review", "--pr", "1", "--repo", "o/r", "--format", "json"])
+        .current_dir(workspace.path())
+        .env("GITHUB_API_URL", server.base_url())
+        .env("OPENAI_BASE_URL", format!("{}/v1", provider.base_url()))
+        .env("OPENAI_API_KEY", "test")
+        .env("GITHUB_WORKSPACE", workspace.path())
+        .output()
+        .expect("the hoverstare binary must be runnable");
+
+    assert!(
+        output.status.success(),
+        "run failed: stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout).expect("stdout must be utf-8");
+    let document: serde_json::Value = serde_json::from_str(&stdout)
+        .unwrap_or_else(|e| panic!("stdout is not one JSON document ({e}): {stdout}"));
+    assert_eq!(document["schema_version"], "1.0");
+    assert_eq!(document["run"]["form"], "cli");
+    assert!(
+        !stdout.contains("INFO") && !stdout.contains("WARN"),
+        "no log line may reach stdout: {stdout}"
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("INFO") || stderr.contains("WARN"),
+        "logs must actually have been emitted, on stderr: {stderr}"
+    );
 }

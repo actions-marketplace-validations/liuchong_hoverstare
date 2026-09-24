@@ -225,15 +225,6 @@ async fn run_review(args: ReviewArgs) -> i32 {
             }
         };
     }
-    if args.format == crate::output::OutputFormat::Sarif {
-        // SARIF lands with spec 16's renderer (T19.3). Refuse loudly rather than
-        // silently emitting something else: a consumer that parses the wrong
-        // format fails far from the cause.
-        tracing::error!(
-            "--format sarif is not implemented yet (spec 16 §3); use --format json or the default"
-        );
-        return 1;
-    }
     match orchestrator::run_review(&cfg, &args, false).await {
         Ok(outcome) => {
             log_review_outcome(&outcome);

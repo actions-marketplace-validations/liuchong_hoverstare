@@ -309,15 +309,16 @@ agentic 审查，把高置信度缺陷以行内评论发到 PR 上并跨 commit 
 
 **验收**：见 [spec 15 §12](15-rule-packs.md)。
 
-### M19 — 输出契约（计划中）
+### M19 — 输出契约 ✅ 2026-09-24 完成
 
 **目标**：同一份结果既有评论出口，也有可供下游消费的结构化出口。
 
-- [ ] `--format human|json|sarif` + `--output`（stdout 纯净，日志走 stderr）
-- [ ] JSON 契约（schema_version / run / units / findings / resolutions，稳定排序）
-- [ ] SARIF 2.1.0 映射（级别、region、partialFingerprints、fixes、invocations）
-- [ ] 无法锚定的 finding 以文件级结果进入 SARIF（不污染评论）
-- [ ] 安全：输出不含凭据、原始 prompt、绝对路径
+- [x] `--format human|json|sarif` + `--output`（stdout 纯净，日志走 stderr）
+- [x] JSON 契约（schema_version / run / units / findings / resolutions / coverage，稳定排序）
+- [x] SARIF 2.1.0 映射（级别、region、partialFingerprints、fixes、invocations）
+- [x] 无法锚定的 finding 以文件级结果进入 SARIF（不污染评论）
+- [x] 安全：输出不含凭据、原始 prompt、绝对路径
+- [x] usage 聚合：多 pass、verifier、reformat 与失败重试都计入（`calls` 字段）
 
 **验收**：见 [spec 16 §10](16-output-contract.md)。
 

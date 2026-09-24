@@ -379,6 +379,14 @@ see the bot's comment for what it actually did.
 ## Local development
 
 ```bash
+# Preview the selection without calling the model at all (no API key needed)
+cargo run -- review --repo owner/repo --pr 123 --preview
+cargo run -- review --repo owner/repo --pr 123 --preview --format json
+
+# Machine-readable result of a real run (see specs/16 for the contract)
+cargo run -- review --repo owner/repo --pr 123 --format json
+cargo run -- review --repo owner/repo --pr 123 --format sarif --output out/result.sarif
+
 # Dry-run a full review of a public PR (no publishing)
 export OPENAI_API_KEY=... OPENAI_BASE_URL=... HOVERSTARE_MODEL=...
 cargo run -- review --repo owner/repo --pr 123 --dry-run

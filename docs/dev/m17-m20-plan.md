@@ -159,9 +159,9 @@ SelectOptions / 成组）、`--preview`（人类可读 + JSON）、覆盖声明�
 |---|---|---|
 | ✅ T19.1 | `src/output.rs`：`OutputFormat`、`RunMeta`、`FindingView`、稳定排序、路径规范化 | 单测 |
 | ✅ T19.2 | JSON 渲染（封闭枚举、`schema_version`） | schema 校验单测 |
-| T19.3 | SARIF 2.1.0 渲染（级别映射、`partialFingerprints`、`fixes`、`invocations`、文件级 result） | 映射逐项断言 |
-| 🟡 T19.4 | `ReviewArgs` 增加 `--format`/`--output`；`--output` 路径沙箱 | 路径逃逸拒绝单测 |
-| T19.5 | tracing 初始化改 stderr（`src/cli.rs`）+ stdout 纯净性回归断言 | 断言：`--format json` 时 stdout 只有一个可解析 JSON |
+| ✅ T19.3 | SARIF 2.1.0 渲染（级别映射、`partialFingerprints`、`fixes`、`invocations`、文件级 result） | 映射逐项断言 |
+| ✅ T19.4 | `ReviewArgs` 增加 `--format`/`--output`；`--output` 路径沙箱 | 路径逃逸拒绝单测 |
+| ✅ T19.5 | tracing 初始化改 stderr（`src/cli.rs`）+ stdout 纯净性回归断言 | 断言：`--format json` 时 stdout 只有一个可解析 JSON |
 | ✅ T19.6 | `pipeline::run` 聚合各 pass + verifier + reformat 的 `Usage` 到 `PipelineStats.usage` | 聚合单测 |
 | T19.7 | 文档：README 补 `--format` 用法；threat-model 补"输出不含凭据/绝对路径"的验证方式 | diff 检查 |
 
@@ -178,7 +178,14 @@ SelectOptions / 成组）、`--preview`（人类可读 + JSON）、覆盖声明�
   走完"3 路 pass → 两票入选 → 发布 review → 落盘契约文档"，断言 schema_version / run 元数据
   （terminal=ok、usage.calls=3、input_tokens=300）/ findings（path/line/side/severity/status）/
   units（covered）/ coverage / resolutions 空
-- 仍未做：T19.3（SARIF 映射）、T19.5（stdout 纯净性的自动化断言）
+- ✅ T19.3 已交付：`output::sarif`（2.1.0）——severity→level 逐项映射、指纹进
+  `partialFingerprints`（跨 run 去重的依据）、`suggestion`→`fixes`（含 deletedRegion）、
+  无法锚定的 finding 走**文件级**结果（无 region，不编造行号）、`invocations.executionSuccessful`
+  由覆盖终态决定、未覆盖单元进 `toolExecutionNotifications`；5 项单测 + 真实运行路径的端到端断言
+- ✅ T19.5 已交付：集成测试 `binary_keeps_stdout_clean_for_structured_output` 跑**真实二进制**，
+  断言 `--format json` 的 stdout 是单个可解析文档、其中不含 INFO/WARN，且 stderr 确实有日志
+- 🟡 T19.7 部分：英文 README 补了 `--preview` / `--format` 用法、威胁模型补了输出边界验证方式；
+  **五份翻译 README 的同步随 T20.7（README 结构对齐）一起做**，避免同一段文字改两遍
 
 **验收**：spec 16 §10 四条。
 

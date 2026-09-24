@@ -689,12 +689,17 @@ pub async fn run_review(
             duration_ms: started.elapsed().as_millis(),
             terminal: coverage.terminal(),
         };
-        let document = output::json(&output::RunReport {
+        let report = output::RunReport {
             meta: &meta,
             findings: &built.findings,
             ledger: &coverage,
             resolutions: &analysis.resolved_finding_ids,
-        });
+        };
+        let document = match args.format {
+            output::OutputFormat::Json => output::json(&report),
+            output::OutputFormat::Sarif => output::sarif(&report),
+            output::OutputFormat::Human => unreachable!("guarded by is_structured"),
+        };
         output::emit(
             &output::to_pretty(&document)?,
             args.output.as_deref(),

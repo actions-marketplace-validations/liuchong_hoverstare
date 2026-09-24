@@ -245,21 +245,8 @@ fn files_for_unit(unit_id: &str) -> Vec<String> {
 
 /// The `findings` segment, in the contract's fixed order (spec 16 §2).
 pub fn findings_json(findings: &[FindingView]) -> serde_json::Value {
-    let mut sorted: Vec<&FindingView> = findings.iter().collect();
-    sorted.sort_by(|a, b| {
-        (
-            a.path.as_str(),
-            a.line.unwrap_or(u64::MAX),
-            a.fingerprint.as_str(),
-        )
-            .cmp(&(
-                b.path.as_str(),
-                b.line.unwrap_or(u64::MAX),
-                b.fingerprint.as_str(),
-            ))
-    });
     serde_json::Value::Array(
-        sorted
+        sorted_findings(findings)
             .into_iter()
             .map(|f| {
                 serde_json::json!({
@@ -281,6 +268,161 @@ pub fn findings_json(findings: &[FindingView]) -> serde_json::Value {
             })
             .collect(),
     )
+}
+
+/// The contract's finding order (spec 16 §2): path, then line with unanchored
+/// findings last, then fingerprint. One implementation for every renderer, so
+/// JSON and SARIF cannot disagree about order.
+pub fn sorted_findings(findings: &[FindingView]) -> Vec<&FindingView> {
+    let mut sorted: Vec<&FindingView> = findings.iter().collect();
+    sorted.sort_by(|a, b| {
+        (
+            a.path.as_str(),
+            a.line.unwrap_or(u64::MAX),
+            a.fingerprint.as_str(),
+        )
+            .cmp(&(
+                b.path.as_str(),
+                b.line.unwrap_or(u64::MAX),
+                b.fingerprint.as_str(),
+            ))
+    });
+    sorted
+}
+
+/// SARIF 2.1.0 document (spec 16 §3).
+///
+/// The mapping is fixed and testable: severity → `level`, our fingerprint →
+/// `partialFingerprints` (that is what makes a re-run deduplicate instead of
+/// re-alerting), and a `suggestion` → `fixes`. Findings that could not be
+/// anchored become file-level results: visible to a dashboard without pretending
+/// to point at a line.
+pub fn sarif(report: &RunReport<'_>) -> serde_json::Value {
+    let rules: Vec<serde_json::Value> = SEVERITY_LEVELS
+        .iter()
+        .map(|(severity, level)| {
+            serde_json::json!({
+                "id": rule_id(*severity),
+                "name": severity.as_str(),
+                "shortDescription": { "text": format!("HoverStare {} finding", severity.as_str()) },
+                "defaultConfiguration": { "level": level },
+            })
+        })
+        .collect();
+
+    let results: Vec<serde_json::Value> = sorted_findings(report.findings)
+        .into_iter()
+        .map(|f| {
+            let mut location = serde_json::json!({
+                "physicalLocation": {
+                    "artifactLocation": { "uri": normalize_path(&f.path) },
+                }
+            });
+            if let Some(line) = f.line {
+                location["physicalLocation"]["region"] = serde_json::json!({
+                    "startLine": line,
+                    "endLine": f.end_line.unwrap_or(line),
+                });
+            }
+            let mut result = serde_json::json!({
+                "ruleId": rule_id(f.severity),
+                "level": level_for(f.severity),
+                "message": { "text": message_text(f) },
+                "locations": [location],
+                "partialFingerprints": { FINGERPRINT_KEY: f.fingerprint },
+            });
+            if let Some(suggestion) = f.suggestion.as_deref().filter(|s| !s.trim().is_empty()) {
+                let line = f.line.unwrap_or(1);
+                result["fixes"] = serde_json::json!([{
+                    "description": { "text": "Apply the suggested change" },
+                    "artifactChanges": [{
+                        "artifactLocation": { "uri": normalize_path(&f.path) },
+                        "replacements": [{
+                            "deletedRegion": {
+                                "startLine": line,
+                                "endLine": f.end_line.unwrap_or(line),
+                            },
+                            "insertedContent": { "text": suggestion },
+                        }],
+                    }],
+                }]);
+            }
+            result
+        })
+        .collect();
+
+    let notifications: Vec<serde_json::Value> = report
+        .ledger
+        .uncovered()
+        .into_iter()
+        .map(|(unit_id, state)| {
+            let (level, detail) = match state {
+                crate::units::UnitState::Failed(reason) => ("error", reason.as_str()),
+                crate::units::UnitState::Truncated(reason) => ("warning", reason.as_str()),
+                _ => ("warning", "not dispatched"),
+            };
+            serde_json::json!({
+                "level": level,
+                "message": { "text": format!("{unit_id}: {detail}") },
+                "properties": { "hoverstareUnit": unit_id },
+            })
+        })
+        .collect();
+
+    serde_json::json!({
+        "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
+        "version": "2.1.0",
+        "runs": [{
+            "tool": {
+                "driver": {
+                    "name": "hoverstare",
+                    "version": env!("CARGO_PKG_VERSION"),
+                    "informationUri": "https://github.com/liuchong/hoverstare",
+                    "rules": rules,
+                }
+            },
+            "invocations": [{
+                "executionSuccessful": report.meta.terminal == TerminalState::Ok,
+                "toolExecutionNotifications": notifications,
+            }],
+            "results": results,
+        }],
+    })
+}
+
+/// Key our fingerprint travels under (SARIF allows arbitrary keys; the name is
+/// part of the contract because consumers deduplicate on it).
+pub const FINGERPRINT_KEY: &str = "hoverstareFingerprint";
+
+/// Severity → SARIF `level` (spec 16 §3). Fixed, because a dashboard's triage
+/// load depends on it.
+const SEVERITY_LEVELS: &[(Severity, &str)] = &[
+    (Severity::Critical, "error"),
+    (Severity::High, "error"),
+    (Severity::Medium, "warning"),
+    (Severity::Low, "note"),
+];
+
+fn level_for(severity: Severity) -> &'static str {
+    SEVERITY_LEVELS
+        .iter()
+        .find(|(s, _)| *s == severity)
+        .map(|(_, level)| *level)
+        .unwrap_or("warning")
+}
+
+fn rule_id(severity: Severity) -> String {
+    format!("hoverstare/{}", severity.as_str())
+}
+
+/// `title`, blank line, body: the same two fields the inline comment leads with,
+/// so a reader of either sees the same claim.
+fn message_text(finding: &FindingView) -> String {
+    if finding.body.trim().is_empty() {
+        finding.title.clone()
+    } else {
+        format!("{}\n\n{}", finding.title, finding.body)
+    }
 }
 
 /// Repository-relative, forward slashes, no leading `./` (spec 16 §2).
@@ -495,6 +637,122 @@ mod tests {
         assert_eq!(
             files_for_unit("changeset:src/a.rs"),
             vec!["src/a.rs".to_string()]
+        );
+    }
+
+    fn ledger_with(units: &[&str]) -> CoverageLedger {
+        let built: Vec<crate::units::ReviewUnit> = units
+            .iter()
+            .map(|p| crate::units::ReviewUnit {
+                unit_id: format!("changeset:{p}"),
+                source: UnitSource::Changeset,
+                files: vec![(*p).to_string()],
+                unit_fp: "fp".to_string(),
+            })
+            .collect();
+        CoverageLedger::freeze(&built)
+    }
+
+    #[test]
+    fn sarif_maps_severity_fingerprint_and_fixes() {
+        let ledger = ledger_with(&["src/a.rs", "src/b.rs"]);
+        let mut with_fix = finding("src/a.rs", Some(3), "aaa");
+        with_fix.suggestion = Some("let x = 1;".into());
+        with_fix.severity = Severity::Critical;
+        let mut note = finding("src/b.rs", None, "bbb");
+        note.severity = Severity::Low;
+        let findings = vec![with_fix, note];
+        let meta = meta();
+        let doc = sarif(&RunReport {
+            meta: &meta,
+            findings: &findings,
+            ledger: &ledger,
+            resolutions: &[],
+        });
+
+        assert_eq!(doc["version"], "2.1.0");
+        assert_eq!(doc["runs"][0]["tool"]["driver"]["name"], "hoverstare");
+        assert_eq!(doc["runs"][0]["results"].as_array().unwrap().len(), 2);
+        // severity → level, and the rule id travels with the result
+        assert_eq!(doc["runs"][0]["results"][0]["level"], "error");
+        assert_eq!(
+            doc["runs"][0]["results"][0]["ruleId"],
+            "hoverstare/critical"
+        );
+        assert_eq!(doc["runs"][0]["results"][1]["level"], "note");
+        // our fingerprint is what a re-run deduplicates on
+        assert_eq!(
+            doc["runs"][0]["results"][0]["partialFingerprints"][FINGERPRINT_KEY],
+            "aaa"
+        );
+        // a suggestion becomes a fix with a deleted region
+        let replacement =
+            &doc["runs"][0]["results"][0]["fixes"][0]["artifactChanges"][0]["replacements"][0];
+        assert_eq!(replacement["deletedRegion"]["startLine"], 3);
+        assert_eq!(replacement["insertedContent"]["text"], "let x = 1;");
+        // an unanchored finding is a file-level result: no region, not a fake line
+        assert!(
+            doc["runs"][0]["results"][1]["locations"][0]["physicalLocation"]
+                .get("region")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn sarif_reports_incomplete_execution_and_unit_notifications() {
+        let mut ledger = ledger_with(&["src/a.rs", "src/b.rs"]);
+        ledger.cover("changeset:src/a.rs");
+        ledger.fail("changeset:src/b.rs", "provider 500");
+        let partial_meta = RunMeta {
+            terminal: TerminalState::Partial,
+            ..meta()
+        };
+        let findings = vec![finding("src/a.rs", Some(1), "aa")];
+        let doc = sarif(&RunReport {
+            meta: &partial_meta,
+            findings: &findings,
+            ledger: &ledger,
+            resolutions: &[],
+        });
+        assert_eq!(
+            doc["runs"][0]["invocations"][0]["executionSuccessful"],
+            false
+        );
+        let notifications = doc["runs"][0]["invocations"][0]["toolExecutionNotifications"]
+            .as_array()
+            .unwrap();
+        assert_eq!(
+            notifications.len(),
+            1,
+            "only the uncovered unit is reported"
+        );
+        assert_eq!(notifications[0]["level"], "error");
+        assert!(
+            notifications[0]["message"]["text"]
+                .as_str()
+                .unwrap()
+                .contains("provider 500")
+        );
+
+        // A fully covered run says so, and reports no notifications.
+        let mut ok_ledger = ledger_with(&["src/a.rs"]);
+        ok_ledger.cover_all();
+        let ok_meta = meta();
+        let doc = sarif(&RunReport {
+            meta: &ok_meta,
+            findings: &[],
+            ledger: &ok_ledger,
+            resolutions: &[],
+        });
+        assert_eq!(
+            doc["runs"][0]["invocations"][0]["executionSuccessful"],
+            true
+        );
+        assert!(
+            doc["runs"][0]["invocations"][0]["toolExecutionNotifications"]
+                .as_array()
+                .unwrap()
+                .is_empty()
         );
     }
 
