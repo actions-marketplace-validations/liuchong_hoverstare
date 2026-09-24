@@ -284,17 +284,18 @@ agentic 审查，把高置信度缺陷以行内评论发到 PR 上并跨 commit 
 `Build (pinned revision)` 成功且事件版本被跳过；bot 产出的提交 `author`/`committer` 均为维护者、
 签名通过且 GitHub 侧 `verified=true`。
 
-### M17 — 审查单元与覆盖契约（计划中）
+### M17 — 审查单元与覆盖契约 ✅ 2026-09-24 完成
 
 **目标**：把"答应了审什么 / 实际审了什么"变成机器可核对的账，而不是模型的自觉。
 
-- [ ] ReviewUnit 抽象与确定性成组（`group_units`，默认关）
-- [ ] 选择收敛为纯函数 + 排除原因枚举（预览与运行同源）
-- [ ] `hoverstare review --preview`：零模型调用输出 will_review / excluded
-- [ ] 覆盖账本：分母冻结、单元状态机、终态 ok/partial/empty
-- [ ] 摘要与轮次报告呈现覆盖声明（`report_coverage`，默认开）
+- [x] ReviewUnit 抽象与确定性成组（`group_units`，默认关；组 id 由组键派生）
+- [x] 选择收敛为纯函数 + 排除原因枚举（`SelectOptions`；预览与运行共用同一实现）
+- [x] `hoverstare review --preview`：零模型调用输出 will_review / excluded（含 `--format json`）
+- [x] 覆盖账本：分母冻结、单元状态机、终态 ok/partial/empty；失败注记带覆盖计数
+- [x] 摘要与轮次报告呈现覆盖声明（`report_coverage`，默认开；六语言文案 + 元数据字段）
+- [x] `select_strict`：`secret-path` / `default-path` / `extension` 三类保留原因
 
-**验收**：见 [spec 14 §10](14-review-unit.md)。
+**验收**：见 [spec 14 §10](14-review-unit.md)；逐条证据见 [施工计划](../docs/dev/m17-m20-plan.md#s1--m17-审查单元与覆盖契约)。
 
 ### M18 — 语言规则包（计划中）
 

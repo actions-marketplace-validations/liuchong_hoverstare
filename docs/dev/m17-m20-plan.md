@@ -138,6 +138,19 @@ P0 门禁脚本骨架 ──► S1 M17 审查单元与覆盖 ──┬──► 
 
 **验收**：spec 14 §10 四条。
 
+**M17 收口（✅ 2026-09-24）——逐条证据**：
+
+| spec 14 §10 | 证据 |
+|---|---|
+| 1. `--preview` 零模型调用、日志无 provider 请求 | 真实 PR `0xPlaygrounds/rig#2162`（无模型凭据）：stdout `preview: Full review — 1 review unit(s), ~329 tokens, no model calls`；stderr 中 provider 相关命中 0 |
+| 2. 单元失败时覆盖可见、退出码仍 0 | 集成测试 `analysis_failure_status_check_states_coverage`（状态描述含 `coverage 0/1`）+ 真实失败链路日志 `coverage: 0/1 unit(s) covered (terminal=partial)` 且 exit 0 |
+| 3. 预览与运行同源 | 结构保证（共用 `prepare_inputs`/`select`）+ 平价单测（与旧 filter/truncate 逐项一致）+ 真实 PR 上 `--preview` 与 `--format json` 数字一致 |
+| 4. 单测覆盖 §9、fmt/clippy/test 全绿 | `cargo test --workspace` 250 passed / 0 failed；fmt 干净；`clippy --all-targets -D warnings` 干净；门禁自测 18/18 |
+
+**M17 交付清单**：`src/units.rs`（Selection / ExcludeReason / CoverageLedger / CoverageSummary /
+SelectOptions / 成组）、`--preview`（人类可读 + JSON）、覆盖声明（正文 + meta + 失败注记）、
+`select_strict`、`group_units`；spec 01/14/16 同步修订；AGENTS.md §7 #34/#35 记录两条运维经验。
+
 ## 4. S2a — M19 输出契约 / S2b — M18 规则包
 
 ### S2a（M19）
