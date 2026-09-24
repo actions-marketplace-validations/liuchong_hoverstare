@@ -4,23 +4,36 @@
 > 本文与 `specs/` 冲突时以 spec 为准；实现中发现 spec 不成立，先改 spec 再改代码（AGENTS.md §4.1）。
 > 施工顺序、批次与验收见 [`m17-m20-plan.md`](m17-m20-plan.md)。
 >
-> 文中行号锚定提交 `e576780`（spec 14–17 定稿那次）；行号会随代码演进漂移，施工时以符号名为准。
+> **符号名是权威，行号只是路标。** 本文件首次写于 `e576780`（spec 14–17 定稿那次），
+> M17 落地时 orchestrator 被重构（新增 `prepare_inputs` / `preview`），旧行号已整体漂移，
+> 下面的行号已在 T17.8 重新对齐（见 §0 的当前锚点表）。再次施工前若发现对不上，
+> 以符号名 grep 为准，并顺手更新本表。
 
 ## 0. 现状锚点（施工前必须对得上）
 
-主链路（review 形态）：
+主链路（review 形态，M17 之后的现状）：
 
 ```
-orchestrator::run_review            src/orchestrator.rs:129
-  ├─ 取 PR diff（全量 / compare 增量）           :213 / :239
-  ├─ diff::filter_text(&diff, &cfg.ignore)      :213 / :239   → (String, 排除计数)
-  ├─ diff::truncate_text(&filtered, max_diff_kb) :214 / :240  → Truncation{ text, truncated_files }
-  ├─ orchestrator::analyze                      :591
-  │    └─ pipeline::run(backend, cfg, parsed, diff_text,
-  │                     truncated_files, shared, mode, instructions)   :613
-  ├─ report::build_review(...) → BuiltReview    report.rs:59
-  ├─ gh.create_review(...)                      :391  ── 失败 → report::render_fallback_comment（:249）
-  └─ post_status_checks(...)（可选）             :519
+orchestrator::prepare_inputs            src/orchestrator.rs:188   ← 预览与运行共用
+  ├─ 取 PR diff（全量 / compare 增量）
+  ├─ units::select(&diff, &cfg.ignore, cfg.max_diff_kb)   → Selection{ text, units, excluded }
+  ├─ 覆盖分母冻结 units::CoverageLedger::freeze(&selection.units)
+  └─ → Prep::Ready(ReviewInputs{ ... })  /  Prep::Done(Outcome)（skip / fail-open 已在内部定型）
+
+orchestrator::run_review                src/orchestrator.rs:446
+  ├─ coverage.start_all() → analyze → 成功 cover_all() / 失败 fail_all()
+  ├─ orchestrator::analyze              :845
+  │    └─ pipeline::run(..., truncated_files, ...)   // 多 pass 投票 + verifier
+  ├─ report::build_review(...)          report.rs:62  （ReviewContext.coverage 渲染覆盖声明）
+  ├─ gh.create_review(...)              :644  ── 失败 → report::render_fallback_comment
+  └─ post_status_checks(...)（可选）
+
+orchestrator::preview                   src/orchestrator.rs:363  （--preview，零模型调用）
+  └─ 复用 prepare_inputs；人类可读输出走 i18n，JSON 与 spec 16 的 units 段同构
+
+units::select / CoverageLedger          src/units.rs:331 / :198
+failure_note（失败注记带覆盖）           src/orchestrator.rs:55
+日志初始化（写 stderr）                  src/cli.rs:149
 ```
 
 关键既有类型（施工时直接复用，不新造平行概念）：
@@ -38,15 +51,17 @@ orchestrator::run_review            src/orchestrator.rs:129
 | `Config` / `Severity` | `src/config.rs:18-77` | 新配置项落点 |
 | `T`（i18n 文本目录） | `src/i18n.rs:56+` | 新增用户可见文案的落点；机器可读内容不本地化 |
 | `Usage` | `src/agent/mod.rs:76` | 每次调用的 token 计数（含 cached）；已聚合到 `ReviewRun` |
+| `units::Selection` / `CoverageLedger` / `CoverageSummary` | `src/units.rs:331` / `:198` / `:150` | **M17 新增**：唯一选择结果、冻结分母、覆盖计数（报告与元数据共用） |
 
-现状缺口（每条对应一个 spec，施工时逐条消掉）：
+缺口清单（每条对应一个 spec；**M17 进度**见施工计划）：
 
-1. 选择逻辑**只在内部**：`filter_text` 只回"排除了几段"，`truncate_text` 只回被丢的整文件名单——
-   没有逐文件原因、没有承诺集合、没有预览（spec 14）。
-2. 规则只有**仓库级**（`RepoInstructions`），没有按文件语言聚焦的检查要点（spec 15）。
-3. 输出只有人类可读评论 + `--dry-run` 的调试打印；**日志默认写 stdout**
-   （`src/cli.rs:104-108` 的 `tracing_subscriber::fmt().init()`），因此当前 stdout 不能直接当管道用（spec 16）。
-4. 工程门禁**没有脚本**：`scripts/` 为空目录，`cargo fmt/clippy/test` 之外无自动化校验（spec 17）。
+1. ✅ 已消（spec 14）：选择收敛为 `units::select` + 逐项排除原因 + 零成本预览 + 覆盖账本；
+   剩余：`group_units`（确定性成组，T17.11）、`select_strict`（三类保留原因，T17.10）。
+2. ⏳ 待做（spec 15）：规则仍只有**仓库级**（`RepoInstructions`），没有按文件语言聚焦的检查要点。
+3. 🟡 部分（spec 16）：日志已改 stderr、`--preview --format json` 可用；运行的
+   `--format json|sarif` 与 usage 聚合待 M19。
+4. ⏳ 待做（spec 17）：门禁脚本已就位（P0），但 15 处引用 pin、六份 README 结构对齐、
+   覆盖率基线、密钥扫描与 CI 接线待 S3。
 
 ## 1. 文件落点总览
 

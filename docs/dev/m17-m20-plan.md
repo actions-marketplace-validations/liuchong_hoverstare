@@ -78,9 +78,10 @@ P0 门禁脚本骨架 ──► S1 M17 审查单元与覆盖 ──┬──► 
 | ✅ T17.5 | 覆盖账本接线（分母冻结、状态迁移、终态计算），`Outcome::Published` 增加 `terminal`/`usage` | 状态机四类终态单测 |
 | ✅ T17.6 | `--preview`（`ReviewArgs`）+ 在 LLM 凭据校验前短路；人类可读输出 + `--format json` 的 `units` 段 | 端到端：真实 PR 预览零 provider 请求（日志断言） |
 | ✅ T17.7 | `report::build_review` 渲染覆盖声明行（`T::coverage_line`，`report_coverage` 默认开） | 摘要渲染单测 + 真实 PR 目视 |
-| T17.8 | 文档同步：AGENTS.md 运维经验（若有坑）+ 本设计文档行号刷新 | diff 检查 |
+| ✅ T17.8 | 文档同步：AGENTS.md 运维经验（若有坑）+ 本设计文档行号刷新 | diff 检查 |
 | T17.9 | httpmock 端到端失败链路测试：`status_checks = true` + 模型 500 → 状态检查描述携带覆盖计数 | 新增集成测试 |
 | T17.10 | `select_strict`：启用 `secret-path` / `extension` / `default-path` 三类保留原因（含各自 fixture 与"被排除事实不得静默"的呈现） | 配置 + 匹配 + 单测 |
+| T17.11 | `group_units`：确定性成组（镜像文件/双语资源/up-down 迁移等配对规则），成组后单元仍是并发与记账单位 | 配置 + 配对规则 + 单测 |
 
 **S1 进度（滚动记录）**：
 
