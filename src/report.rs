@@ -22,6 +22,9 @@ pub struct ReviewContext<'a> {
     pub files_reviewed: usize,
     pub excluded_files: usize,
     pub summary: &'a str,
+    /// Coverage of this run (spec 14 §4). `None` when the review body should not
+    /// state it (`report_coverage = false`).
+    pub coverage: Option<crate::units::CoverageSummary>,
 }
 
 /// Anchoring fallback chain (spec 06 (2)):
@@ -183,6 +186,19 @@ fn render_body(
     }
     b.push_str("\n\n");
 
+    // Coverage statement (spec 14 §4): the run says what it promised to review
+    // and what it covered, so "nothing was reported" cannot be confused with
+    // "nothing was looked at".
+    if let Some(coverage) = ctx.coverage {
+        b.push_str(&t.coverage_line(
+            coverage.covered,
+            coverage.total,
+            coverage.failed,
+            coverage.truncated,
+        ));
+        b.push_str("\n\n");
+    }
+
     if !ctx.summary.is_empty() {
         b.push_str(ctx.summary);
         b.push_str("\n\n");
@@ -233,8 +249,13 @@ fn render_body(
     }
 
     // Machine-readable metadata (incremental review depends on it, spec 07)
+    let (units_total, units_covered, terminal) = match ctx.coverage {
+        Some(c) => (c.total, c.covered, c.terminal.as_str()),
+        None => (0, 0, "unknown"),
+    };
     b.push_str(&format!(
-        "<!-- hoverstare-meta\nmode: {}\nhead_sha: {}\nfiles_reviewed: {}\nexcluded_files: {}\n",
+        "<!-- hoverstare-meta\nmode: {}\nhead_sha: {}\nfiles_reviewed: {}\nexcluded_files: {}\n\
+         units_total: {units_total}\nunits_covered: {units_covered}\nterminal: {terminal}\n",
         ctx.meta_mode, ctx.head_sha, ctx.files_reviewed, ctx.excluded_files
     ));
     for (fp, file, line, sev) in meta_findings {
@@ -293,6 +314,13 @@ mod tests {
     }
 
     fn ctx<'a>(summary: &'a str) -> ReviewContext<'a> {
+        ctx_with_coverage(summary, None)
+    }
+
+    fn ctx_with_coverage<'a>(
+        summary: &'a str,
+        coverage: Option<crate::units::CoverageSummary>,
+    ) -> ReviewContext<'a> {
         ReviewContext {
             repo_full_name: "o/r",
             head_sha: "abc123",
@@ -301,6 +329,7 @@ mod tests {
             files_reviewed: 1,
             excluded_files: 0,
             summary,
+            coverage,
         }
     }
 
@@ -408,5 +437,65 @@ mod tests {
                 .contains("```suggestion\nlet x = 1;\n```")
         );
         assert!(r.comments[0].body.contains("`src/b.rs:9` — same kind"));
+    }
+
+    #[test]
+    fn coverage_line_is_stated_and_absent_when_disabled() {
+        let cfg = cfg();
+        let t = T::new(crate::i18n::Lang::En);
+
+        let summary = crate::units::CoverageSummary {
+            total: 3,
+            covered: 3,
+            ..crate::units::CoverageSummary::default()
+        };
+        let built = build_review(
+            &[],
+            &diff(),
+            &cfg,
+            &ctx_with_coverage("s", Some(summary)),
+            &BTreeSet::new(),
+        );
+        assert!(
+            built.review.body.contains("Coverage: 3/3 review unit(s)"),
+            "body must state the coverage: {}",
+            built.review.body
+        );
+        // Machine-readable mirror (spec 16 will consume the same numbers).
+        assert!(built.review.body.contains("units_total: 3"));
+        assert!(built.review.body.contains("units_covered: 3"));
+
+        let built = build_review(&[], &diff(), &cfg, &ctx("s"), &BTreeSet::new());
+        assert!(
+            !built.review.body.contains("Coverage:"),
+            "report_coverage = false must omit the line"
+        );
+        assert!(built.review.body.contains("terminal: unknown"));
+        let _ = t;
+    }
+
+    #[test]
+    fn partial_coverage_is_visible_in_the_body() {
+        let cfg = cfg();
+        let summary = crate::units::CoverageSummary {
+            total: 4,
+            covered: 2,
+            failed: 1,
+            truncated: 1,
+            terminal: crate::units::TerminalState::Partial,
+        };
+        let built = build_review(
+            &[],
+            &diff(),
+            &cfg,
+            &ctx_with_coverage("s", Some(summary)),
+            &BTreeSet::new(),
+        );
+        assert!(
+            built.review.body.contains("2/4") && built.review.body.contains("failed"),
+            "partial coverage must be stated, not silent: {}",
+            built.review.body
+        );
+        assert!(built.review.body.contains("terminal: partial"));
     }
 }

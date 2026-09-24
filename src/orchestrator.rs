@@ -49,6 +49,17 @@ fn fail_or_open(cfg: &Config, e: anyhow::Error) -> anyhow::Result<Outcome> {
     }
 }
 
+/// Failure notes state the coverage as well (spec 14 §4): an uncovered unit must
+/// be visible, never silent — "no comments posted" and "nothing was reviewed"
+/// are different facts. Status descriptions are capped at 140 chars downstream.
+fn failure_note(kind: &str, coverage: &units::CoverageLedger) -> String {
+    let s = coverage.summary();
+    format!(
+        "{kind}: coverage {}/{} ({} failed, {} truncated)",
+        s.covered, s.total, s.failed, s.truncated
+    )
+}
+
 /// Every terminal state (including skip/failure paths) writes the `hoverstare`
 /// status check (spec 07: otherwise a required check would never arrive and
 /// merging would deadlock)
@@ -356,10 +367,16 @@ pub async fn preview(cfg: &Config, args: &ReviewArgs, json: bool) -> anyhow::Res
     };
     let selection = &inputs.analysis_selection;
     if json {
+        // Machine-readable: never localized (spec 09's rule for machine payloads).
         let doc = preview_json(selection, inputs.incremental);
         println!("{}", serde_json::to_string_pretty(&doc)?);
     } else {
-        print_preview(selection, inputs.incremental);
+        let t = T::new(cfg.language);
+        let scope = match (inputs.incremental, inputs.prior_sha.as_deref()) {
+            (true, Some(prior)) => t.scope_incremental(&prior[..7.min(prior.len())]),
+            _ => t.scope_full().to_string(),
+        };
+        print_preview(selection, &scope, &t);
     }
     Ok(Outcome::Previewed {
         units: selection.units.len(),
@@ -397,26 +414,27 @@ fn preview_json(selection: &units::Selection, incremental: bool) -> serde_json::
 }
 
 /// Human-readable preview on stdout (logs stay on stderr, spec 16 §4.3).
-fn print_preview(selection: &units::Selection, incremental: bool) {
+///
+/// Labels are localized (spec 09: user-visible output follows `language`); unit
+/// paths and exclusion reason codes stay as-is because they are identifiers.
+fn print_preview(selection: &units::Selection, scope: &str, t: &T) {
     println!(
-        "preview: {} scope — {} review unit(s), ~{} tokens, no model calls",
-        if incremental { "incremental" } else { "full" },
-        selection.units.len(),
-        selection.estimated_tokens
+        "{}",
+        t.preview_summary(scope, selection.units.len(), selection.estimated_tokens)
     );
     if selection.units.is_empty() {
-        println!("will review: (nothing)");
+        println!("{} {}", t.preview_will_review(), t.preview_nothing());
     } else {
-        println!("will review:");
+        println!("{}", t.preview_will_review());
         for unit in &selection.units {
             println!("  {}", unit.files.join(", "));
         }
     }
     if !selection.excluded.is_empty() {
-        println!("excluded:");
+        println!("{}", t.preview_excluded());
         for e in &selection.excluded {
             let note = if e.kept_in_text {
-                ", kept for anchoring"
+                t.preview_kept_for_anchoring()
             } else {
                 ""
             };
@@ -481,7 +499,7 @@ pub async fn run_review(
                 &head_sha,
                 cfg,
                 false,
-                "diff over budget, analysis abandoned",
+                &failure_note("diff over budget, analysis abandoned", &coverage),
             )
             .await;
         }
@@ -562,7 +580,7 @@ pub async fn run_review(
                     &head_sha,
                     cfg,
                     false,
-                    "analysis failed (fail-open)",
+                    &failure_note("analysis failed (fail-open)", &coverage),
                 )
                 .await;
             }
@@ -592,6 +610,11 @@ pub async fn run_review(
         files_reviewed: analysis_parsed.files.len(),
         excluded_files,
         summary: &analysis.summary,
+        coverage: if cfg.report_coverage {
+            Some(coverage.summary())
+        } else {
+            None
+        },
     };
     let built = report::build_review(&analysis.findings, &anchor_parsed, cfg, &ctx, &open_fps);
     let inline_count = built.review.comments.len();
@@ -886,6 +909,21 @@ mod tests {
         assert_eq!(doc["units"][0]["status"], "pending");
         assert_eq!(doc["truncated"].as_array().unwrap().len(), 0);
         assert!(doc["estimated_tokens"].as_u64().unwrap() > 0);
+    }
+
+    #[test]
+    fn failure_notes_state_the_coverage() {
+        let diff = "diff --git a/src/a.rs b/src/a.rs\n--- a/src/a.rs\n+++ b/src/a.rs\n@@ -1,0 +1,1 @@\n+x\n";
+        let selection = units::select(diff, &globset::GlobSetBuilder::new().build().unwrap(), 400);
+        let mut ledger = units::CoverageLedger::freeze(&selection.units);
+        ledger.fail_all("provider 500");
+        let note = failure_note("analysis failed (fail-open)", &ledger);
+        assert!(note.contains("coverage 0/1"), "{note}");
+        assert!(note.contains("1 failed"), "{note}");
+
+        let ledger = units::CoverageLedger::freeze(&selection.units);
+        let note = failure_note("diff over budget, analysis abandoned", &ledger);
+        assert!(note.contains("coverage 0/1"), "{note}");
     }
 
     #[test]

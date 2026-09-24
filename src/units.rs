@@ -154,11 +154,12 @@ pub enum UnitState {
 }
 
 /// Terminal state of a run, derived from coverage alone (spec 14 §4).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum TerminalState {
+    #[default]
+    Empty,
     Ok,
     Partial,
-    Empty,
 }
 
 impl TerminalState {
@@ -169,6 +170,17 @@ impl TerminalState {
             TerminalState::Empty => "empty",
         }
     }
+}
+
+/// Counts derived from a ledger: what the coverage line and the machine-readable
+/// output need, in one place so they cannot disagree.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct CoverageSummary {
+    pub total: usize,
+    pub covered: usize,
+    pub failed: usize,
+    pub truncated: usize,
+    pub terminal: TerminalState,
 }
 
 /// Coverage ledger: the frozen denominator plus one state per unit.
@@ -268,6 +280,25 @@ impl CoverageLedger {
                 Some(state) => Some((id.as_str(), state)),
             })
             .collect()
+    }
+
+    /// Counts for the coverage line and for machine-readable output (spec 14 §4,
+    /// spec 16 §2).
+    pub fn summary(&self) -> CoverageSummary {
+        let mut summary = CoverageSummary {
+            total: self.denominator.len(),
+            ..CoverageSummary::default()
+        };
+        for state in self.states.values() {
+            match state {
+                UnitState::Covered => summary.covered += 1,
+                UnitState::Failed(_) => summary.failed += 1,
+                UnitState::Truncated(_) => summary.truncated += 1,
+                UnitState::Pending | UnitState::Running => {}
+            }
+        }
+        summary.terminal = self.terminal();
+        summary
     }
 
     /// Terminal state derived from coverage, never from success claims (spec 14 §4).
@@ -624,6 +655,25 @@ index 5555555..6666666 100644
             ledger.state("a"),
             Some(&UnitState::Truncated("diff over budget".to_string()))
         );
+    }
+
+    #[test]
+    fn summary_counts_states_and_terminal() {
+        let units = [unit("a"), unit("b"), unit("c")];
+        let mut ledger = CoverageLedger::freeze(&units);
+        ledger.start_all();
+        ledger.cover("a");
+        ledger.fail("b", "boom");
+        ledger.truncate("c", "budget");
+        let summary = ledger.summary();
+        assert_eq!(summary.total, 3);
+        assert_eq!(summary.covered, 1);
+        assert_eq!(summary.failed, 1);
+        assert_eq!(summary.truncated, 1);
+        assert_eq!(summary.terminal, TerminalState::Partial);
+
+        let empty = CoverageLedger::freeze(&[]).summary();
+        assert_eq!(empty.terminal, TerminalState::Empty);
     }
 
     #[test]

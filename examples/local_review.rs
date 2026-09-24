@@ -86,6 +86,7 @@ async fn main() -> anyhow::Result<()> {
         files_reviewed: parsed.files.len(),
         excluded_files: excluded,
         summary: &analysis.summary,
+        coverage: None,
     };
     let review =
         report::build_review(&analysis.findings, &parsed, &cfg, &ctx, &Default::default()).review;

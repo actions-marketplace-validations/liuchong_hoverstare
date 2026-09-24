@@ -85,12 +85,15 @@ Decision { unit | excluded(ExcludeReason), estimated_tokens }
 | `default-path` | 内建默认排除路径（vendor、构建产物、锁文件等） |
 | `oversized` | 超出 `max_diff_kb` 预算被整文件丢弃（按文件优先级，首个文件保底保留） |
 
-**v1 启用的原因集合（其余保留但默认关闭）**：`deleted`、`binary`、`generated`、`ignored`、
-`oversized` 五类与现状等价（`binary` 由平台侧的"无 patch"体现，`ignored` 与 `generated`
-是既有的路径 glob 与内容启发式，`oversized` 是既有的优先级截断），因此默认启用；
-`secret-path`、`extension`、`default-path` 会**改变审查范围**，默认关闭，需要时由配置显式开启
-（`select_strict = true`）。理由：一次改动同时改变"审查范围"与"记账口径"会让归因失效——
-先让账本忠实反映现状，再单独调整范围。
+**启用的原因集合（M17 交付状态）**：`deleted`、`binary`、`generated`、`ignored`、`oversized`
+五类与改造前等价（`binary` 由平台侧的"无 patch"体现，`ignored` 与 `generated` 是既有的
+路径 glob 与内容启发式，`oversized` 是既有的优先级截断），因此默认启用；
+`secret-path`、`extension`、`default-path` 会**改变审查范围**，**M17 尚未启用**
+（保留在枚举里，等 `select_strict` 开关落地——见施工计划 T17.10）。理由：一次改动同时改变
+"审查范围"与"记账口径"会让归因失效——先让账本忠实反映现状，再单独调整范围。
+
+> `secret-path` 需要单独决策：把 `.env` / 私钥类文件的改动默认排除出模型输入是**安全**取向，
+> 但它同时缩小审查范围，必须连同"被排除的事实如何呈现给用户"一起设计（不得静默）。
 
 预算类排除（`budget`）**不属于**选择：它发生在运行期，记入覆盖账本（§4）而非排除原因。
 
@@ -176,7 +179,7 @@ spec 01），但**不允许静默**：单元级失败必须显式出现在报告
 |---|---|---|
 | `report_coverage` | `true` | 是否在摘要/结构化输出中呈现覆盖声明 |
 | `group_units` | `false` | 是否启用确定性成组（§1） |
-| `select_strict` | `false` | 是否启用会缩小审查范围的三类排除（§2） |
+| `select_strict` | `false` | 是否启用会缩小审查范围的三类排除（§2）；**计划中（T17.10）** |
 
 `--preview` 是 CLI 参数，不写进配置文件。
 
@@ -197,8 +200,10 @@ spec 01），但**不允许静默**：单元级失败必须显式出现在报告
 
 ## 9. 测试要点
 
-- 纯函数性质测试：同输入同输出；预览与运行的选择结果逐项相等（同一实现的回归护栏）；
-- 排除原因枚举：每个原因至少一个 fixture（含多原因叠加时的优先级）；
+- 纯函数性质测试：同输入同输出；**预览与运行同源**由结构保证（共用 `prepare_inputs` 与
+  `units::select`），并由"`units::select` 与改造前 filter/truncate 逐项一致"的平价测试锁定；
+- 排除原因枚举：每个**已启用**原因至少一个 fixture（含多原因叠加时的优先级）；
+  保留原因（`secret-path` / `extension` / `default-path`）在启用它们的任务里补 fixture；
 - 覆盖账本状态机：全 covered / 混合 failed / 预算截断 / 空分母 四类终态；
 - 分母冻结：运行期失败不得反向修改分母；
 - 成组：镜像文件成组后，findings 的路径与行号不带组信息。
@@ -206,8 +211,10 @@ spec 01），但**不允许静默**：单元级失败必须显式出现在报告
 ## 10. 验收
 
 - `hoverstare review --preview` 在真实 PR 上零模型调用输出选择结果（日志中无 provider 请求）；
-- 人为让一个单元失败：报告出现覆盖声明且标注未覆盖原因，退出码仍为 0（默认 fail-open）；
-- 预览结果与同参数真实运行的选择结果完全一致（脚本比对）；
+- 人为让一个单元失败：覆盖声明可见且标出未覆盖原因（终态 `partial`），退出码仍为 0（默认
+  fail-open）——落在两处载体：状态检查描述（`status_checks = true` 时）与运行日志；
+- 预览与运行同源：共用 `prepare_inputs`/`select`（结构保证）+ 平价单测 + 真实 PR 上
+  `--preview` 与 `--preview --format json` 的数字一致；
 - 单测覆盖 §9 全部条目，`cargo test --workspace` / clippy / fmt 全绿。
 
 ## 11. 里程碑

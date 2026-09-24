@@ -189,7 +189,8 @@ agentic 审查，把高置信度缺陷以行内评论发到 PR 上并跨 commit 
 - [x] `i18n` 模块：Lang（en/zh-CN/ru/fr/de/es，与 README 语言集一致）+ 文本目录 T
 - [x] 配置：`language`（toml）/ `HOVERSTARE_LANGUAGE`（env 优先）> 默认 en，无法识别回退 en
 - [x] 本地化范围：review 正文、行内评论、help、status check 描述、主要业务日志、
-  LLM prompt 输出语言指令、explain 回复、resolve 标记
+  LLM prompt 输出语言指令、explain 回复、resolve 标记、**预览输出（汇总行 / will review /
+  excluded 标签）与覆盖声明行**（spec 14；机器可读载荷如 `hoverstare-meta` 与预览 JSON 永不本地化）
 - [x] prompt 全部改英文 + 输出语言指令（finding 描述语言跟随配置）
 - [x] 代码注释与硬编码日志全英文化
 - [x] 机器可读内容（hoverstare-meta、指纹、schema、命令名）永不本地化

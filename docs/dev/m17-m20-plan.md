@@ -77,8 +77,10 @@ P0 门禁脚本骨架 ──► S1 M17 审查单元与覆盖 ──┬──► 
 | ✅ T17.4 | `orchestrator::run_review` 用 `select` 一次算出 `Selection`，传进 `analyze` → `pipeline::run` | 选择结果在预览与运行间逐项一致（回归护栏测试） |
 | ✅ T17.5 | 覆盖账本接线（分母冻结、状态迁移、终态计算），`Outcome::Published` 增加 `terminal`/`usage` | 状态机四类终态单测 |
 | ✅ T17.6 | `--preview`（`ReviewArgs`）+ 在 LLM 凭据校验前短路；人类可读输出 + `--format json` 的 `units` 段 | 端到端：真实 PR 预览零 provider 请求（日志断言） |
-| T17.7 | `report::build_review` 渲染覆盖声明行（`T::coverage_line`，`report_coverage` 默认开） | 摘要渲染单测 + 真实 PR 目视 |
+| ✅ T17.7 | `report::build_review` 渲染覆盖声明行（`T::coverage_line`，`report_coverage` 默认开） | 摘要渲染单测 + 真实 PR 目视 |
 | T17.8 | 文档同步：AGENTS.md 运维经验（若有坑）+ 本设计文档行号刷新 | diff 检查 |
+| T17.9 | httpmock 端到端失败链路测试：`status_checks = true` + 模型 500 → 状态检查描述携带覆盖计数 | 新增集成测试 |
+| T17.10 | `select_strict`：启用 `secret-path` / `extension` / `default-path` 三类保留原因（含各自 fixture 与"被排除事实不得静默"的呈现） | 配置 + 匹配 + 单测 |
 
 **S1 进度（滚动记录）**：
 
@@ -104,6 +106,16 @@ P0 门禁脚本骨架 ──► S1 M17 审查单元与覆盖 ──┬──► 
   在非预览时**明确报错**而不是静默忽略（结构化输出属 M19）；
 - 前移项（有意）：spec 16 §4.3 的"日志改 stderr"提前到本任务完成——否则预览的 stdout 会被日志
   污染，预览 JSON 不可用；T19.5 仍需补自动化 stdout 纯净性断言；
+- ✅ T17.7 已交付：`CoverageSummary`（账本派生，报告/元数据/输出共用一份计数）、
+  `T::coverage_line` 与 5 个预览标签（六语言）、`report_coverage` 配置（默认 true）、
+  review 正文与 `hoverstare-meta` 同时带上覆盖（`units_total` / `units_covered` / `terminal`）、
+  失败注记带覆盖（`failure_note`，状态检查描述不再只说"失败"）；
+- 真实验证（T17.7 追加）：失败链路（假 provider、真实 PR）→ exit 0、日志
+  `coverage: 0/1 unit(s) covered (terminal=partial)`、不写任何评论（fail-open 未被削弱）；
+  中文预览 → `预览：全量审查 — 1 个审查单元，约 329 tokens，未调用模型`；
+- 本轮发现并如实在 spec 标注的一处差距：`select_strict` 与三类保留原因**尚未实现**，
+  spec 14 §2/§6/§9 已改为"保留、等 T17.10"，不留"existence by documentation"；
+
 - 真实验证（无模型凭据、真实 PR `0xPlaygrounds/rig#2162`）：`--preview` 输出
   `preview: full scope — 1 review unit(s), ~329 tokens, no model calls`，stdout 无日志、
   stderr 无任何 provider 请求；`--format json` 的 stdout 通过 `jq` 形状校验

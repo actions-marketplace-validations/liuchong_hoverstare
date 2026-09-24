@@ -140,7 +140,7 @@ pub fn select_unbounded(input: &str, ignore: &GlobSet) -> Selection
 - 退出码：0（即使有排除项）；配置错误仍按 spec 01 走 exit 1；
 - 日志走 stderr（见 §4.3）。
 
-### 2.4 覆盖账本接线——T17.5，未实现
+### 2.4 覆盖账本接线——T17.5 ✅ 已实现（覆盖声明见 T17.7）
 
 | 时点 | 动作 |
 |---|---|
@@ -152,8 +152,12 @@ pub fn select_unbounded(input: &str, ignore: &GlobSet) -> Selection
 
 - 记账点放在 `pipeline::run` 内部（那里才知道每个单元是否真的完成），**不放在**模型输出解析里——
   模型说"我看完了"不算完成；
-- `report::build_review` 新增参数 `&CoverageLedger`，摘要行由 `T::coverage_line(...)` 渲染
-  （新增 i18n 文案；机器可读部分不进文案）；
+- `report::build_review` 通过 `ReviewContext.coverage: Option<CoverageSummary>` 拿到覆盖
+  （**已实现**）：正文一行 `T::coverage_line(...)`，`hoverstare-meta` 同时写入
+  `units_total` / `units_covered` / `terminal`，供 spec 16 的结构化输出复用同一份计数；
+  `report_coverage = false` 时正文不写该行（元数据仍写 `terminal: unknown`）；
+- 失败路径：`failure_note(kind, &ledger)` 把覆盖计数拼进状态检查描述——"没有评论"与
+  "什么都没审"是两件不同的事，不允许静默（**已实现**）；
 - `Outcome::Published` 增加 `terminal: TerminalState` 与 `usage: Usage` 字段，供 spec 16 的输出层消费。
 
 ## 3. spec 15：语言规则包

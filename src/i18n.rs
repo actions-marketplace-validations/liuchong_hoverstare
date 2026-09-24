@@ -121,6 +121,106 @@ impl T {
         }
     }
 
+    /// Coverage line (spec 14 §4): what this run promised to review and what it
+    /// actually covered. `failed`/`truncated` are appended only when non-zero, so
+    /// the common case stays one short sentence.
+    pub fn coverage_line(
+        &self,
+        covered: usize,
+        total: usize,
+        failed: usize,
+        truncated: usize,
+    ) -> String {
+        let mut s = match self.0 {
+            Lang::En => format!("Coverage: {covered}/{total} review unit(s)"),
+            Lang::ZhCn => format!("覆盖：{covered}/{total} 个审查单元"),
+            Lang::Ru => format!("Покрытие: {covered}/{total} единиц(ы) проверки"),
+            Lang::Fr => format!("Couverture : {covered}/{total} unité(s) de revue"),
+            Lang::De => format!("Abdeckung: {covered}/{total} Review-Einheit(en)"),
+            Lang::Es => format!("Cobertura: {covered}/{total} unidad(es) de revisión"),
+        };
+        if failed > 0 || truncated > 0 {
+            s.push_str(&match self.0 {
+                Lang::En => format!("; {failed} failed, {truncated} truncated"),
+                Lang::ZhCn => format!("；{failed} 个失败，{truncated} 个被截断"),
+                Lang::Ru => format!("; ошибок: {failed}, усечено: {truncated}"),
+                Lang::Fr => format!(" ; {failed} en échec, {truncated} tronquée(s)"),
+                Lang::De => format!("; {failed} fehlgeschlagen, {truncated} abgeschnitten"),
+                Lang::Es => format!("; {failed} con error, {truncated} truncada(s)"),
+            });
+        }
+        s
+    }
+
+    /// `--preview` summary line (spec 14 §3). Human-readable only: the JSON form
+    /// is machine-readable and never localized.
+    pub fn preview_summary(&self, scope: &str, units: usize, tokens: u64) -> String {
+        match self.0 {
+            Lang::En => format!(
+                "preview: {scope} — {units} review unit(s), ~{tokens} tokens, no model calls"
+            ),
+            Lang::ZhCn => {
+                format!("预览：{scope} — {units} 个审查单元，约 {tokens} tokens，未调用模型")
+            }
+            Lang::Ru => format!(
+                "предпросмотр: {scope} — единиц: {units}, ~{tokens} токенов, без вызова модели"
+            ),
+            Lang::Fr => format!(
+                "aperçu : {scope} — {units} unité(s), ~{tokens} jetons, aucun appel de modèle"
+            ),
+            Lang::De => format!(
+                "Vorschau: {scope} — {units} Einheit(en), ~{tokens} Token, keine Modellaufrufe"
+            ),
+            Lang::Es => format!(
+                "vista previa: {scope} — {units} unidad(es), ~{tokens} tokens, sin llamadas al modelo"
+            ),
+        }
+    }
+
+    pub fn preview_will_review(&self) -> &'static str {
+        match self.0 {
+            Lang::En => "will review:",
+            Lang::ZhCn => "将审查：",
+            Lang::Ru => "будет проверено:",
+            Lang::Fr => "sera examiné :",
+            Lang::De => "wird geprüft:",
+            Lang::Es => "se revisará:",
+        }
+    }
+
+    pub fn preview_nothing(&self) -> &'static str {
+        match self.0 {
+            Lang::En => "(nothing)",
+            Lang::ZhCn => "（无）",
+            Lang::Ru => "(ничего)",
+            Lang::Fr => "(rien)",
+            Lang::De => "(nichts)",
+            Lang::Es => "(nada)",
+        }
+    }
+
+    pub fn preview_excluded(&self) -> &'static str {
+        match self.0 {
+            Lang::En => "excluded:",
+            Lang::ZhCn => "已排除：",
+            Lang::Ru => "исключено:",
+            Lang::Fr => "exclu :",
+            Lang::De => "ausgeschlossen:",
+            Lang::Es => "excluido:",
+        }
+    }
+
+    pub fn preview_kept_for_anchoring(&self) -> &'static str {
+        match self.0 {
+            Lang::En => ", kept for anchoring",
+            Lang::ZhCn => "，为锚定保留",
+            Lang::Ru => ", оставлено для привязки",
+            Lang::Fr => ", conservé pour l'ancrage",
+            Lang::De => ", für Verankerung behalten",
+            Lang::Es => ", conservado para el anclaje",
+        }
+    }
+
     pub fn clean_verdict(&self) -> &'static str {
         match self.0 {
             Lang::En => "✅ No defects found.",
@@ -515,6 +615,46 @@ mod tests {
         assert_eq!(Lang::resolve(None, Some("de")), Lang::De);
         assert_eq!(Lang::resolve(None, None), Lang::En);
         assert_eq!(Lang::resolve(Some("  "), Some("ru")), Lang::Ru);
+    }
+
+    #[test]
+    fn coverage_and_preview_lines_exist_in_every_language() {
+        for lang in [Lang::En, Lang::ZhCn, Lang::Ru, Lang::Fr, Lang::De, Lang::Es] {
+            let t = T::new(lang);
+            let coverage = t.coverage_line(3, 3, 0, 0);
+            assert!(
+                coverage.contains('3'),
+                "coverage line for {lang:?}: {coverage}"
+            );
+            assert!(
+                !coverage.contains("failed") || lang == Lang::En,
+                "the failure suffix must stay out of a fully covered run ({lang:?})"
+            );
+            let partial = t.coverage_line(1, 3, 1, 1);
+            assert_ne!(partial, coverage, "partial coverage must differ ({lang:?})");
+            let preview = t.preview_summary(t.scope_full(), 2, 120);
+            assert!(
+                preview.contains('2') && preview.contains("120"),
+                "preview summary for {lang:?}: {preview}"
+            );
+            for label in [
+                t.preview_will_review(),
+                t.preview_nothing(),
+                t.preview_excluded(),
+                t.preview_kept_for_anchoring(),
+            ] {
+                assert!(!label.trim().is_empty(), "empty preview label for {lang:?}");
+            }
+        }
+        assert_eq!(
+            T::new(Lang::En).coverage_line(3, 3, 0, 0),
+            "Coverage: 3/3 review unit(s)"
+        );
+        assert!(
+            T::new(Lang::ZhCn)
+                .coverage_line(1, 2, 1, 0)
+                .starts_with("覆盖：1/2")
+        );
     }
 
     #[test]
