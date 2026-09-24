@@ -8,7 +8,7 @@ use crate::agent::rig_backend::RigBackend;
 use crate::agent::tools::ToolShared;
 use crate::cli::ReviewArgs;
 use crate::config::{Actor, Config, PermissionKey, Severity};
-use crate::diff::{self, ParsedDiff};
+use crate::diff::ParsedDiff;
 use crate::event;
 use crate::findings::AnalysisResult;
 use crate::github::{GitHubClient, NewStatus, Repo, StatusState};
@@ -17,11 +17,16 @@ use crate::instructions::RepoInstructions;
 use crate::prompt::ReviewMode;
 use crate::report::{self, ReviewContext};
 use crate::state::{self, OpenFinding};
+use crate::units;
 
 #[derive(Debug)]
 pub enum Outcome {
     Skipped(String),
-    Published { inline_comments: usize },
+    Published {
+        inline_comments: usize,
+        /// Coverage terminal state (spec 14 §4): ok | partial | empty.
+        terminal: units::TerminalState,
+    },
     DryRun,
     AnalysisFailed(String),
 }
@@ -210,12 +215,14 @@ pub async fn run_review(
     if full_diff.trim().is_empty() {
         return Ok(skip_outcome(cfg, &gh, &repo, &head_sha, "empty diff".into()).await);
     }
-    let (full_filtered, full_excluded) = diff::filter_text(&full_diff, &cfg.ignore);
-    let full_trunc = diff::truncate_text(&full_filtered, cfg.max_diff_kb);
-    let anchor_parsed = ParsedDiff::parse(&full_trunc.text);
+    // Selection runs once, through the one implementation (spec 14 §2). The
+    // anchoring pass needs the same decision with the size budget applied, so it
+    // reads the same selection's text instead of deriving its own.
+    let full_selection = units::select(&full_diff, &cfg.ignore, cfg.max_diff_kb);
+    let anchor_parsed = ParsedDiff::parse(&full_selection.text);
 
     // Analysis scope (spec 07: incremental = delta diff of prior..head)
-    let (analysis_text, truncated_files, excluded_files) = if incremental {
+    let analysis_selection = if incremental {
         let prior = prior_sha.as_deref().unwrap_or_default();
         let delta = match gh.get_compare_diff(&repo, prior, &pr.head.sha).await {
             Ok(d) => d,
@@ -236,16 +243,28 @@ pub async fn run_review(
             )
             .await);
         }
-        let (filtered, excluded) = diff::filter_text(&delta, &cfg.ignore);
-        let t = diff::truncate_text(&filtered, cfg.max_diff_kb);
-        (t.text, t.truncated_files, excluded)
+        units::select(&delta, &cfg.ignore, cfg.max_diff_kb)
     } else {
-        (
-            full_trunc.text.clone(),
-            full_trunc.truncated_files.clone(),
-            full_excluded,
-        )
+        full_selection.clone()
     };
+
+    let analysis_text = analysis_selection.text.clone();
+    // The one exclusion list carries two histories: the path gates (reported to
+    // the model as "filtered out by rules") and the size budget (reported as the
+    // truncated-file list). Keep both meanings explicit.
+    let truncated_files = analysis_selection.oversized_dropped();
+    let excluded_files = analysis_selection.path_gate_excluded_count();
+
+    // Coverage ledger (spec 14 §4): freeze the denominator now, before anything
+    // is dispatched. From here on the ledger records what happened to that set
+    // and nothing else — the denominator is never revised by the outcome.
+    let mut coverage = units::CoverageLedger::freeze(&analysis_selection.units);
+    tracing::info!(
+        "coverage: {} review unit(s) selected, {} excluded file(s), {} truncated file(s)",
+        coverage.denominator().len(),
+        excluded_files,
+        truncated_files.len()
+    );
 
     let analysis_parsed = ParsedDiff::parse(&analysis_text);
     if analysis_parsed.files.is_empty() {
@@ -257,6 +276,12 @@ pub async fn run_review(
         return Ok(skip_outcome(cfg, &gh, &repo, &head_sha, reason).await);
     }
     if analysis_text.len() > cfg.max_diff_kb * 1024 * 2 {
+        coverage.truncate_all("diff over budget");
+        tracing::warn!(
+            "coverage: 0/{} unit(s) covered (terminal={})",
+            coverage.denominator().len(),
+            coverage.terminal().as_str()
+        );
         let outcome = fail_or_open(
             cfg,
             anyhow::anyhow!(
@@ -313,6 +338,7 @@ pub async fn run_review(
     gha_group_end();
     gha_group("analysis (multi-pass review / voting / verification)");
     let shared = ToolShared::new(cfg.workspace.clone(), &pr.base.ref_name, cfg.max_tool_calls);
+    coverage.start_all();
     let analysis = match analyze(
         cfg,
         &analysis_parsed,
@@ -324,8 +350,24 @@ pub async fn run_review(
     )
     .await
     {
-        Ok(a) => a,
+        Ok(a) => {
+            coverage.cover_all();
+            tracing::info!(
+                "coverage: {}/{} unit(s) covered (terminal={})",
+                coverage.covered_count(),
+                coverage.denominator().len(),
+                coverage.terminal().as_str()
+            );
+            a
+        }
         Err(e) => {
+            coverage.fail_all(format!("{e:#}"));
+            tracing::warn!(
+                "coverage: {}/{} unit(s) covered (terminal={})",
+                coverage.covered_count(),
+                coverage.denominator().len(),
+                coverage.terminal().as_str()
+            );
             gha_group_end();
             let outcome = fail_or_open(cfg, e.context("analysis failed"))?;
             if matches!(outcome, Outcome::AnalysisFailed(_)) {
@@ -372,6 +414,9 @@ pub async fn run_review(
     if args.dry_run {
         let out = serde_json::json!({
             "mode": ctx.meta_mode,
+            "terminal": coverage.terminal().as_str(),
+            "units_covered": coverage.covered_count(),
+            "units_total": coverage.denominator().len(),
             "commit_id": built.review.commit_id,
             "resolved_finding_ids": analysis.resolved_finding_ids,
             "carried_over": built.carried_over,
@@ -441,6 +486,7 @@ pub async fn run_review(
     gha_group_end();
     Ok(Outcome::Published {
         inline_comments: if published { inline_count } else { 0 },
+        terminal: coverage.terminal(),
     })
 }
 

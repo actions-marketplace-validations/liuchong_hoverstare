@@ -10,6 +10,8 @@
 //! the network, the model or the platform: everything here is a pure function of
 //! the diff text and the configuration.
 
+use std::collections::BTreeMap;
+
 use globset::GlobSet;
 use sha1::{Digest, Sha1};
 
@@ -138,6 +140,159 @@ impl Selection {
             .iter()
             .filter(|e| e.reason == reason)
             .collect()
+    }
+}
+
+/// Lifecycle of one unit inside a run (spec 14 §4).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UnitState {
+    Pending,
+    Running,
+    Covered,
+    Failed(String),
+    Truncated(String),
+}
+
+/// Terminal state of a run, derived from coverage alone (spec 14 §4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TerminalState {
+    Ok,
+    Partial,
+    Empty,
+}
+
+impl TerminalState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            TerminalState::Ok => "ok",
+            TerminalState::Partial => "partial",
+            TerminalState::Empty => "empty",
+        }
+    }
+}
+
+/// Coverage ledger: the frozen denominator plus one state per unit.
+///
+/// The denominator is frozen before the first dispatch and cannot be extended
+/// afterwards, so a later arrival (or a retry) can never move the goalposts of
+/// what this run promised to review (spec 14 §4).
+///
+/// v1 note: the pipeline dispatches the whole change set to N parallel passes
+/// (spec 05), so a unit's state follows the fate of that dispatch rather than a
+/// per-unit worker — see the spec's v1 note. The per-unit setters exist so the
+/// grouped/per-unit dispatch that arrives with later input forms needs no new
+/// vocabulary.
+#[derive(Debug, Clone, Default)]
+pub struct CoverageLedger {
+    denominator: Vec<String>,
+    states: BTreeMap<String, UnitState>,
+}
+
+impl CoverageLedger {
+    /// Freeze the denominator from the selected units (duplicates collapse).
+    pub fn freeze(units: &[ReviewUnit]) -> Self {
+        let mut denominator = Vec::with_capacity(units.len());
+        let mut states = BTreeMap::new();
+        for unit in units {
+            if states.contains_key(&unit.unit_id) {
+                continue;
+            }
+            denominator.push(unit.unit_id.clone());
+            states.insert(unit.unit_id.clone(), UnitState::Pending);
+        }
+        CoverageLedger {
+            denominator,
+            states,
+        }
+    }
+
+    pub fn denominator(&self) -> &[String] {
+        &self.denominator
+    }
+
+    pub fn state(&self, unit_id: &str) -> Option<&UnitState> {
+        self.states.get(unit_id)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.denominator.is_empty()
+    }
+
+    pub fn start(&mut self, unit_id: &str) {
+        self.set(unit_id, UnitState::Running);
+    }
+
+    pub fn cover(&mut self, unit_id: &str) {
+        self.set(unit_id, UnitState::Covered);
+    }
+
+    pub fn fail(&mut self, unit_id: &str, reason: impl Into<String>) {
+        self.set(unit_id, UnitState::Failed(reason.into()));
+    }
+
+    pub fn truncate(&mut self, unit_id: &str, reason: impl Into<String>) {
+        self.set(unit_id, UnitState::Truncated(reason.into()));
+    }
+
+    pub fn start_all(&mut self) {
+        self.set_all(UnitState::Running);
+    }
+
+    pub fn cover_all(&mut self) {
+        self.set_all(UnitState::Covered);
+    }
+
+    pub fn fail_all(&mut self, reason: impl Into<String>) {
+        let reason = reason.into();
+        self.set_all(UnitState::Failed(reason));
+    }
+
+    pub fn truncate_all(&mut self, reason: impl Into<String>) {
+        let reason = reason.into();
+        self.set_all(UnitState::Truncated(reason));
+    }
+
+    pub fn covered_count(&self) -> usize {
+        self.states
+            .values()
+            .filter(|s| matches!(s, UnitState::Covered))
+            .count()
+    }
+
+    /// Units that are not covered, with their state (diagnostics, report line).
+    pub fn uncovered(&self) -> Vec<(&str, &UnitState)> {
+        self.denominator
+            .iter()
+            .filter_map(|id| match self.states.get(id) {
+                Some(UnitState::Covered) | None => None,
+                Some(state) => Some((id.as_str(), state)),
+            })
+            .collect()
+    }
+
+    /// Terminal state derived from coverage, never from success claims (spec 14 §4).
+    pub fn terminal(&self) -> TerminalState {
+        if self.denominator.is_empty() {
+            TerminalState::Empty
+        } else if self.covered_count() == self.denominator.len() {
+            TerminalState::Ok
+        } else {
+            TerminalState::Partial
+        }
+    }
+
+    /// Unknown ids are ignored on purpose: the denominator is frozen.
+    fn set(&mut self, unit_id: &str, state: UnitState) {
+        if let Some(slot) = self.states.get_mut(unit_id) {
+            *slot = state;
+        }
+    }
+
+    fn set_all(&mut self, state: UnitState) {
+        let ids = self.denominator.clone();
+        for id in ids {
+            self.set(&id, state.clone());
+        }
     }
 }
 
@@ -412,6 +567,63 @@ index 5555555..6666666 100644
             &no_ignore(),
         );
         assert_eq!(a.units[0].unit_id, b.units[0].unit_id);
+    }
+
+    fn unit(id: &str) -> ReviewUnit {
+        ReviewUnit {
+            unit_id: id.to_string(),
+            source: UnitSource::Changeset,
+            files: vec![id.to_string()],
+            unit_fp: "fp".to_string(),
+        }
+    }
+
+    #[test]
+    fn ledger_freezes_the_denominator() {
+        let mut ledger = CoverageLedger::freeze(&[unit("a"), unit("b"), unit("a")]);
+        assert_eq!(ledger.denominator(), ["a", "b"], "duplicates collapse");
+        // A unit that was never frozen cannot enter the ledger afterwards.
+        ledger.cover("c");
+        assert_eq!(ledger.state("c"), None);
+        assert_eq!(ledger.covered_count(), 0);
+    }
+
+    #[test]
+    fn ledger_terminal_state_comes_from_coverage() {
+        let mut empty = CoverageLedger::freeze(&[]);
+        empty.cover_all();
+        assert_eq!(empty.terminal(), TerminalState::Empty);
+
+        let units = [unit("a"), unit("b")];
+        let mut ok = CoverageLedger::freeze(&units);
+        ok.start_all();
+        ok.cover_all();
+        assert_eq!(ok.terminal(), TerminalState::Ok);
+
+        let mut partial = CoverageLedger::freeze(&units);
+        partial.start_all();
+        partial.cover("a");
+        partial.fail("b", "provider 500");
+        assert_eq!(partial.terminal(), TerminalState::Partial);
+        let uncovered = partial.uncovered();
+        assert_eq!(uncovered.len(), 1);
+        assert_eq!(uncovered[0].0, "b");
+        assert_eq!(
+            uncovered[0].1,
+            &UnitState::Failed("provider 500".to_string())
+        );
+    }
+
+    #[test]
+    fn ledger_truncation_is_a_distinct_uncovered_state() {
+        let mut ledger = CoverageLedger::freeze(&[unit("a")]);
+        ledger.start_all();
+        ledger.truncate_all("diff over budget");
+        assert_eq!(ledger.terminal(), TerminalState::Partial);
+        assert_eq!(
+            ledger.state("a"),
+            Some(&UnitState::Truncated("diff over budget".to_string()))
+        );
     }
 
     #[test]

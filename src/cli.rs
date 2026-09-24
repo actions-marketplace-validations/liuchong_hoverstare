@@ -142,9 +142,13 @@ async fn run_review(args: ReviewArgs) -> i32 {
             use orchestrator::Outcome::*;
             match outcome {
                 Skipped(reason) => tracing::info!("skipped: {reason}"),
-                Published { inline_comments } => {
-                    tracing::info!("✅ review published ({inline_comments} inline comments)")
-                }
+                Published {
+                    inline_comments,
+                    terminal,
+                } => tracing::info!(
+                    "✅ review published ({inline_comments} inline comments, coverage {})",
+                    terminal.as_str()
+                ),
                 DryRun => tracing::info!("✅ dry-run complete (not published)"),
                 AnalysisFailed(reason) => {
                     // fail-open: analysis failure does not block CI (spec 01)

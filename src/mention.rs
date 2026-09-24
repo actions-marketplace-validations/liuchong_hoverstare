@@ -154,7 +154,11 @@ pub async fn run_mention_event(cfg: &Config, ev: &MentionEvent) -> anyhow::Resul
         Ok(msg) => {
             let _ = gh.create_reaction(&repo, ev, "+1").await;
             tracing::info!("✅ {msg}");
-            Ok(Outcome::Published { inline_comments: 0 })
+            // No review units are involved in a command reply (spec 14 §4).
+            Ok(Outcome::Published {
+                inline_comments: 0,
+                terminal: crate::units::TerminalState::Empty,
+            })
         }
         Err(e) => {
             let _ = gh.create_reaction(&repo, ev, "-1").await;
@@ -179,8 +183,12 @@ async fn do_review(
         dry_run: false,
     };
     match orchestrator::run_review(cfg, &args, true).await? {
-        Outcome::Published { inline_comments } => Ok(format!(
-            "full re-review complete ({inline_comments} inline comments)"
+        Outcome::Published {
+            inline_comments,
+            terminal,
+        } => Ok(format!(
+            "full re-review complete ({inline_comments} inline comments, coverage {})",
+            terminal.as_str()
         )),
         Outcome::Skipped(r) => Ok(format!("skipped: {r}")),
         Outcome::AnalysisFailed(r) => Err(anyhow::anyhow!("analysis failed: {r}")),
@@ -243,7 +251,10 @@ async fn run_thread_discussion(
         Ok(Some(msg)) => {
             let _ = gh.create_reaction(repo, ev, "+1").await;
             tracing::info!("✅ {msg}");
-            Ok(Outcome::Published { inline_comments: 0 })
+            Ok(Outcome::Published {
+                inline_comments: 0,
+                terminal: crate::units::TerminalState::Empty,
+            })
         }
         // The model judged the reply unrelated to the finding: stay silent
         // (logged as a skip; never masquerade a failure as silence)
