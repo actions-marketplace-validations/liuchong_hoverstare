@@ -456,23 +456,47 @@ async fn build_rules_block(
     shared: &Arc<ToolShared>,
 ) -> Option<String> {
     if !cfg.rule_packs {
+        tracing::info!("rule_resolved: disabled by configuration (rule_packs = false)");
         return None;
     }
-    let paths: Vec<&str> = parsed.files.iter().map(|f| f.path.as_str()).collect();
-    let mut heads: std::collections::HashMap<String, String> = std::collections::HashMap::new();
-    for path in &paths {
-        if !crate::rules::needs_sniff(path) {
-            continue;
+
+    // Per-file resolution, logged per hit (spec 15 §9): "which checkpoints applied
+    // to which file" must be answerable from the logs, including whether a sniff
+    // (not the declared order) decided it.
+    let mut resolutions: Vec<crate::rules::Resolution> = Vec::new();
+    for file in &parsed.files {
+        let head = if crate::rules::needs_sniff(&file.path) {
+            // Bounded read through the same sandbox as every other file read; a
+            // failure just means "no sniff", never a different answer.
+            Some(crate::agent::tools::read_file(shared, &file.path, Some(1), Some(40)).await)
+        } else {
+            None
+        };
+        for hit in crate::rules::resolve(&file.path, head.as_deref(), cfg.max_rule_packs) {
+            tracing::info!(
+                "rule_resolved path={} pack={} matched={} sniffed={}",
+                file.path,
+                hit.pack_id,
+                hit.matched_pattern,
+                hit.sniffed
+            );
+            if !resolutions.iter().any(|r| r.pack_id == hit.pack_id) {
+                resolutions.push(hit);
+            }
         }
-        let head = crate::agent::tools::read_file(shared, path, Some(1), Some(40)).await;
-        heads.insert((*path).to_string(), head);
     }
-    let resolutions = crate::rules::resolve_for_paths(
-        paths.iter().copied(),
-        |path| heads.get(path).cloned(),
-        cfg.max_rule_packs,
-    );
-    crate::rules::render(&resolutions)
+
+    let block = crate::rules::render(&resolutions);
+    match &block {
+        Some(rendered) => tracing::info!(
+            "rule_injected packs={} bytes={} budget={}",
+            resolutions.len(),
+            rendered.len(),
+            crate::rules::MAX_INJECTED_BYTES
+        ),
+        None => tracing::info!("rule_injected packs=0 (nothing to inject)"),
+    }
+    block
 }
 
 /// Single analysis call (no retries, for multi-pass use; the focus paragraph is

@@ -143,7 +143,9 @@ v1 初始包（与项目自身技术面一致；`objc`/`matlab` 是因为 §3 �
 ## 12. 验收
 
 - `hoverstare rules check src/main.rs` 输出命中的 `rust` 包与匹配模式；
-- 真实 PR 上 logs 可见 `rule_resolved` / `rule_injected`，且注入总量在配置上限内；
+- 真实 PR 上 logs 可见 `rule_resolved` / `rule_injected`，且注入总量在配置上限内
+  （自动化：集成测试 `binary_keeps_stdout_clean_for_structured_output` 跑真实二进制并断言
+  stderr 同时含 `rule_resolved` 与 `rule_injected`）；
 - 关闭 `rule_packs` 后行为回到"仓库指令 + 默认包"；
 - 单测覆盖 §11 全部条目，`cargo test --workspace` / clippy / fmt 全绿。
 

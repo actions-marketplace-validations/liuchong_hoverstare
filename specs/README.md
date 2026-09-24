@@ -329,10 +329,13 @@ agentic 审查，把高置信度缺陷以行内评论发到 PR 上并跨 commit 
 
 - [x] `scripts/verify-action-pins.sh`（G1）+ 15 处 action/workflow 引用全部 pin 到 SHA
 - [x] `scripts/check-doc-structure.sh`（G2）+ 六份 README 结构对齐
-- [x] 依赖与许可审计（G3）接线（`cargo deny` / `cargo audit`；白名单文件随首次 CI 运行补齐）
+- [x] 依赖与许可审计（G3）：`deny.toml` 按依赖图实际许可写；首次 CI 运行即抓到 2 个真实漏洞（h2 / rustls）并已按补丁版本升级
 - [x] 覆盖率基线（G4，实测 80.36% → 阈值 79.8%）与不劣化判定
 - [x] 密钥扫描（G5，`.gitleaks.toml`）；actionlint 同时覆盖门禁脚本自身（G6）
-- [x] spec 与模块一致性检查（G7）；`scripts/verify-all.sh` 汇总；CI `gates` job（`--full --strict`）
+- [x] spec 与模块一致性检查（G7）；`scripts/verify-all.sh` 汇总；CI 两个阻塞 job（`gates` 快集合、`gates-heavy` 重集合）
+
+**验收**：见 [spec 17 §7](17-verification-gates.md)。CI 全绿证据：commit `5c3a7cb` 的 run
+（`workflow-lint` / `check` / `gates` / `gates-heavy` 四个 job 全部 success）。
 
 **验收**：见 [spec 17 §7](17-verification-gates.md)。
 

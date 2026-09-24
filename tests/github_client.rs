@@ -1255,4 +1255,14 @@ async fn binary_keeps_stdout_clean_for_structured_output() {
         stderr.contains("INFO") || stderr.contains("WARN"),
         "logs must actually have been emitted, on stderr: {stderr}"
     );
+    // spec 15 §9/§12: which checkpoints applied, and how much was injected, must be
+    // answerable from the logs of a real run.
+    assert!(
+        stderr.contains("rule_resolved"),
+        "the run must log its rule resolution: {stderr}"
+    );
+    assert!(
+        stderr.contains("rule_injected"),
+        "the run must log the injection size: {stderr}"
+    );
 }
