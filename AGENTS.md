@@ -296,6 +296,10 @@ cargo fmt && cargo clippy --workspace --all-targets -- -D warnings
     两条规矩：(1) 测试不要依赖"只有某些环境才有"的变量，要么显式覆盖（`HOVERSTARE_FORM=cli`）、
     要么把逻辑参数化后单测（`form_from(getter)`）；(2) `git push` 之后要
     `gh run list` / `gh run watch` 确认这次 commit 的 run 结论，别只看本地。
+    具体实例：GHA 的 `::group::` 标记原本用 `println!` 写到 stdout，本地（无
+    `GITHUB_ACTIONS`）看不出问题，CI 上却把 `--format json` 的输出污染成无法解析。
+    修法两层：标记改 `eprintln!`（stdout 只放产品），并且测试**显式**给子进程设
+    `GITHUB_ACTIONS=true`，让这条只在 CI 出现的路径在本地也跑一遍。
 
 
 ## 7.5 Dogfood 验证手册（开发模式端到端怎么测）

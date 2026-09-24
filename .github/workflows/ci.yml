@@ -21,7 +21,11 @@ jobs:
           # 只拦"工作流无效"这一类错误（表达式上下文、schema）：这正是让 dogfood 静默失效的
           # 那种。shellcheck 的风格提示（SC2129 重定向、SC2016 单引号）不是这里的门禁对象，
           # 否则每次都要为风格红一次。把空值传给 -shellcheck 即关闭该集成。
-          docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint:latest -color -shellcheck=
+          # The image is pinned by digest (actionlint 1.7.12, linux/amd64): a
+          # floating tag would change what runs here without any commit of ours.
+          docker run --rm -v "$PWD:/repo" -w /repo \
+            rhysd/actionlint@sha256:9d36088643581e728c969f35141f88139fec77280b2be23c1f66f8e40e1025e7 \
+            -color -shellcheck=
 
   # Engineering gates (spec 17). One entry point for the whole gate set, so what
   # a contributor runs locally is what CI enforces. --strict makes a missing tool
@@ -37,12 +41,28 @@ jobs:
 
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
-      # G3/G4/G5/G6 need real tools: dependency audit, coverage, secret scan and
-      # workflow lint. Installed from pinned binaries so the gate does not add a
-      # multi-minute source build to every run.
+      # G3/G4/G5 need real tools: dependency audit, coverage and secret scan.
+      # Installed from prebuilt binaries so the gate does not add a multi-minute
+      # source build to every run.
       - uses: taiki-e/install-action@7623a79cdfecb99d681017af368ca353d9f49bb5 # v2.87.19
         with:
-          tool: actionlint,gitleaks,cargo-deny,cargo-audit,cargo-llvm-cov
+          tool: gitleaks,cargo-deny,cargo-audit,cargo-llvm-cov
+
+      # G6's actionlint is not in that catalogue (binstall has no package for it),
+      # so it is installed from the upstream release with the published checksums
+      # verified — the gate tool itself should not be a floating download.
+      - name: Install actionlint (pinned + checksum)
+        run: |
+          set -euo pipefail
+          version=1.7.12
+          base="https://github.com/rhysd/actionlint/releases/download/v${version}"
+          cd /tmp
+          curl -fsSL "${base}/actionlint_${version}_linux_amd64.tar.gz" -o actionlint.tgz
+          curl -fsSL "${base}/actionlint_${version}_checksums.txt" -o actionlint.sums
+          grep " actionlint_${version}_linux_amd64.tar.gz$" actionlint.sums | sha256sum -c -
+          tar -xzf actionlint.tgz actionlint
+          sudo install -m 0755 actionlint /usr/local/bin/actionlint
+          actionlint -version
 
       - name: Install llvm-tools (coverage gate)
         run: rustup component add llvm-tools-preview

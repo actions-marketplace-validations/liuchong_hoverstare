@@ -1228,6 +1228,10 @@ async fn binary_keeps_stdout_clean_for_structured_output() {
         // "cli" locally; the assertion must not depend on where it runs. The
         // precedence itself is unit-tested in `output::tests`.
         .env("HOVERSTARE_FORM", "cli")
+        // Force the Actions code path ON, even locally: this flag adds log-group
+        // markers, and those used to go to stdout — a CI-only corruption that a
+        // locally-passing test cannot see.
+        .env("GITHUB_ACTIONS", "true")
         .output()
         .expect("the hoverstare binary must be runnable");
 

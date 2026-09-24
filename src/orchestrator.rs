@@ -139,16 +139,21 @@ async fn skip_outcome(
     Outcome::Skipped(reason)
 }
 
-/// GitHub Actions log grouping (no-op when running locally)
+/// GitHub Actions log-group markers.
+///
+/// They go to **stderr**: they are log annotations, and stdout is the product
+/// channel (`--format json|sarif`, `--preview`). Writing them to stdout made a
+/// structured document unparseable in CI while passing locally — the flag is only
+/// set there, which is why the stdout-purity test now forces it on.
 fn gha_group(name: &str) {
     if std::env::var("GITHUB_ACTIONS").is_ok() {
-        println!("::group::{name}");
+        eprintln!("::group::{name}");
     }
 }
 
 fn gha_group_end() {
     if std::env::var("GITHUB_ACTIONS").is_ok() {
-        println!("::endgroup::");
+        eprintln!("::endgroup::");
     }
 }
 
