@@ -33,7 +33,10 @@ jobs:
   gates:
     runs-on: ubuntu-latest
     steps:
+      # Full history: G5 scans commits, not just the working tree.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
 
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
@@ -46,23 +49,34 @@ jobs:
       # source build to every run.
       - uses: taiki-e/install-action@7623a79cdfecb99d681017af368ca353d9f49bb5 # v2.87.19
         with:
-          tool: gitleaks,cargo-deny,cargo-audit,cargo-llvm-cov
+          tool: cargo-deny,cargo-audit,cargo-llvm-cov
 
-      # G6's actionlint is not in that catalogue (binstall has no package for it),
-      # so it is installed from the upstream release with the published checksums
-      # verified — the gate tool itself should not be a floating download.
-      - name: Install actionlint (pinned + checksum)
+      # actionlint (G6) and gitleaks (G5) are not Rust crates, so the catalogue
+      # above cannot provide them. They come from their upstream releases with the
+      # published checksums verified: a gate tool should not itself be a floating
+      # download.
+      - name: Install actionlint and gitleaks (pinned + checksum)
         run: |
           set -euo pipefail
-          version=1.7.12
-          base="https://github.com/rhysd/actionlint/releases/download/v${version}"
           cd /tmp
-          curl -fsSL "${base}/actionlint_${version}_linux_amd64.tar.gz" -o actionlint.tgz
-          curl -fsSL "${base}/actionlint_${version}_checksums.txt" -o actionlint.sums
-          grep " actionlint_${version}_linux_amd64.tar.gz$" actionlint.sums | sha256sum -c -
+
+          actionlint_version=1.7.12
+          actionlint_base="https://github.com/rhysd/actionlint/releases/download/v${actionlint_version}"
+          curl -fsSL "${actionlint_base}/actionlint_${actionlint_version}_linux_amd64.tar.gz" -o actionlint.tgz
+          curl -fsSL "${actionlint_base}/actionlint_${actionlint_version}_checksums.txt" -o actionlint.sums
+          grep " actionlint_${actionlint_version}_linux_amd64.tar.gz$" actionlint.sums | sha256sum -c -
           tar -xzf actionlint.tgz actionlint
           sudo install -m 0755 actionlint /usr/local/bin/actionlint
           actionlint -version
+
+          gitleaks_version=8.30.1
+          gitleaks_base="https://github.com/gitleaks/gitleaks/releases/download/v${gitleaks_version}"
+          curl -fsSL "${gitleaks_base}/gitleaks_${gitleaks_version}_linux_x64.tar.gz" -o gitleaks.tgz
+          curl -fsSL "${gitleaks_base}/gitleaks_${gitleaks_version}_checksums.txt" -o gitleaks.sums
+          grep " gitleaks_${gitleaks_version}_linux_x64.tar.gz$" gitleaks.sums | sha256sum -c -
+          tar -xzf gitleaks.tgz gitleaks
+          sudo install -m 0755 gitleaks /usr/local/bin/gitleaks
+          gitleaks version
 
       - name: Install llvm-tools (coverage gate)
         run: rustup component add llvm-tools-preview
