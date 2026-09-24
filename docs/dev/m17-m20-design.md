@@ -75,15 +75,16 @@ pub struct ReviewUnit {
     pub unit_fp: String,        // 内容指纹（与 finding 指纹区分命名，避免混用）
 }
 
-/// 选择结果：分母 + 逐项原因。
+/// 选择结果：派发文本 + 分母 + 逐项原因。
 pub struct Selection {
-    pub units: Vec<ReviewUnit>,
-    pub excluded: Vec<ExcludedFile>,   // { path, reason }
-    pub estimated_tokens: usize,
+    pub text: String,                  // 实际喂模型的 diff 文本
+    pub units: Vec<ReviewUnit>,        // 覆盖分母
+    pub excluded: Vec<ExcludedFile>,   // { path, reason, kept_in_text }
+    pub estimated_tokens: u64,
 }
 
 pub enum ExcludeReason {
-    Binary, Deleted, SecretPath, IgnoreRule, Extension, DefaultPath, Oversized,
+    Binary, Deleted, Generated, Ignored, Oversized, SecretPath, Extension, DefaultPath,
 }
 
 /// 覆盖账本（运行期事实，不持久化）。
@@ -99,8 +100,22 @@ pub enum TerminalState { Ok, Partial, Empty }
 
 ```rust
 /// 纯函数：无 IO、无网络、无模型、无全局状态；同一输入必得同一输出。
-pub fn select(parsed: &ParsedDiff, cfg: &Config) -> Selection
+/// 带预算的入口给分析路径用；锚定路径需要"不截断的同一份判定"，走 select_unbounded。
+pub fn select(input: &str, ignore: &GlobSet, max_diff_kb: usize) -> Selection
+pub fn select_unbounded(input: &str, ignore: &GlobSet) -> Selection
 ```
+
+**已实现（T17.1–T17.3）时的两点实现事实**：
+
+1. 选择作用于 **diff 文本**（与 spec 03 的"解析前过滤"同层），而**单元是从最终派发的文本里派生**的——
+   这样分母永远不会大于模型实际收到的内容；已截断/被排除的文件不可能混进分母。
+2. `Selection.excluded` 是两类排除的**并集**：路径门禁（ignore glob / generated 启发式）与尺寸预算
+   （`oversized`）。历史语义由两个访问器分别取回：`path_gate_excluded_count()`（对应旧的
+   `filter_text` 计数，用于"all changes filtered out by rules (N files)"与 prompt 说明）与
+   `oversized_dropped()`（对应旧的 `truncate_text.truncated_files`）。**T17.4 接线时必须用这两个
+   访问器**，不要用 `excluded_count()` 顶替其中一个。
+3. `estimated_tokens` 复用 `agent::compaction::estimate_tokens`（与上下文压缩同一套估算口径，
+   避免出现第二套 token 账）。
 
 - 复用现有的 `diff::looks_generated`、`diff::path_priority`、`split_sections`/`section_path`
   等内部能力（必要时把它们从 `fn` 提升为 `pub(crate)`，不复制实现）；
@@ -113,7 +128,7 @@ pub fn select(parsed: &ParsedDiff, cfg: &Config) -> Selection
 - 预览与真实运行**必须**调用同一个 `select`（spec 14 §2 的要求）；禁止在预览路径里
   另写一份判定。
 
-### 2.3 预览（`--preview`）
+### 2.3 预览（`--preview`）——T17.6，未实现
 
 - 落点：`src/cli.rs` 的 `ReviewArgs` 增加 `--preview`；
 - 时序：**在 LLM 凭据校验之前短路**（沿用 `help` 命令"无凭据可跑"的先例）——
@@ -123,7 +138,7 @@ pub fn select(parsed: &ParsedDiff, cfg: &Config) -> Selection
 - 退出码：0（即使有排除项）；配置错误仍按 spec 01 走 exit 1；
 - 日志走 stderr（见 §4.3）。
 
-### 2.4 覆盖账本接线
+### 2.4 覆盖账本接线——T17.5，未实现
 
 | 时点 | 动作 |
 |---|---|

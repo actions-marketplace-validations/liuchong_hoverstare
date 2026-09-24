@@ -76,16 +76,18 @@ Decision { unit | excluded(ExcludeReason), estimated_tokens }
 
 | 原因 | 判据 |
 |---|---|
-| `binary` | 二进制内容 |
+| `binary` | 平台侧报告该文件没有 patch（二进制，或大到无法内联）；文本层面看不到该文件 |
 | `deleted` | 整文件删除（无新内容可审，但仍进入锚定范围） |
+| `generated` | 内容启发式：新增的前 5 行含 `Code generated ... DO NOT EDIT` |
 | `secret-path` | 内建敏感路径（密钥、凭据、`.env` 类文件） |
-| `ignore-rule` | 用户 `ignore` glob 命中 |
+| `ignored` | 用户 `ignore` glob 命中 |
 | `extension` | 不在可审扩展名白名单 |
 | `default-path` | 内建默认排除路径（vendor、构建产物、锁文件等） |
-| `oversized` | 单单元估算 token 超过配置上限 |
+| `oversized` | 超出 `max_diff_kb` 预算被整文件丢弃（按文件优先级，首个文件保底保留） |
 
-**v1 启用的原因集合（其余保留但默认关闭）**：`deleted`、`binary`、`ignore-rule`、`oversized`
-四类与现状等价（二进制/超大文件目前由平台侧"无 patch"体现），因此默认启用；
+**v1 启用的原因集合（其余保留但默认关闭）**：`deleted`、`binary`、`generated`、`ignored`、
+`oversized` 五类与现状等价（`binary` 由平台侧的"无 patch"体现，`ignored` 与 `generated`
+是既有的路径 glob 与内容启发式，`oversized` 是既有的优先级截断），因此默认启用；
 `secret-path`、`extension`、`default-path` 会**改变审查范围**，默认关闭，需要时由配置显式开启
 （`select_strict = true`）。理由：一次改动同时改变"审查范围"与"记账口径"会让归因失效——
 先让账本忠实反映现状，再单独调整范围。

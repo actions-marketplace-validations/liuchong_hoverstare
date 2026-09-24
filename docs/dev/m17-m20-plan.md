@@ -71,14 +71,25 @@ P0 门禁脚本骨架 ──► S1 M17 审查单元与覆盖 ──┬──► 
 
 | 任务 | 内容 | 交付物 |
 |---|---|---|
-| T17.1 | `src/units.rs`：`ReviewUnit`/`Selection`/`ExcludeReason`/`UnitState`/`CoverageLedger`/`TerminalState` | 类型 + 单测 |
-| T17.2 | `units::select`：纯函数，复用 `looks_generated`/`path_priority`/`split_sections`；v1 启用四类原因 | 单测（纯函数性、四类原因、`select_strict` 开关矩阵） |
-| T17.3 | `diff::filter_text`/`truncate_text` 改为 `select` 薄包装并标 `deprecated`；迁移仓库内调用点 | 12 项既有 diff 单测仍绿 |
+| ✅ T17.1 | `src/units.rs`：`ReviewUnit`/`Selection`/`ExcludeReason`/`UnitState`/`CoverageLedger`/`TerminalState` | 类型 + 单测 |
+| ✅ T17.2 | `units::select`：纯函数，复用 `looks_generated`/`path_priority`/`split_sections`；v1 启用四类原因 | 单测（纯函数性、四类原因、`select_strict` 开关矩阵） |
+| ✅ T17.3 | `diff::filter_text`/`truncate_text` 改为 `select` 薄包装并标 `deprecated`；迁移仓库内调用点 | 12 项既有 diff 单测仍绿 |
 | T17.4 | `orchestrator::run_review` 用 `select` 一次算出 `Selection`，传进 `analyze` → `pipeline::run` | 选择结果在预览与运行间逐项一致（回归护栏测试） |
 | T17.5 | 覆盖账本接线（分母冻结、状态迁移、终态计算），`Outcome::Published` 增加 `terminal`/`usage` | 状态机四类终态单测 |
 | T17.6 | `--preview`（`ReviewArgs`）+ 在 LLM 凭据校验前短路；人类可读输出 + `--format json` 的 `units` 段 | 端到端：真实 PR 预览零 provider 请求（日志断言） |
 | T17.7 | `report::build_review` 渲染覆盖声明行（`T::coverage_line`，`report_coverage` 默认开） | 摘要渲染单测 + 真实 PR 目视 |
 | T17.8 | 文档同步：AGENTS.md 运维经验（若有坑）+ 本设计文档行号刷新 | diff 检查 |
+
+**S1 进度（滚动记录）**：
+
+- ✅ T17.1 + T17.2 + T17.3 已交付：`src/units.rs`（类型 + `select`/`select_unbounded` 纯函数 +
+  10 项单测）、`diff::filter_text` 收敛为薄包装、diff 内部辅助改为 `pub(crate)`；
+- 实测：`cargo test --workspace` **229 passed / 0 failed**（基线 219 + 新增 10）、
+  `cargo fmt --all -- --check` 干净、`cargo clippy --workspace --all-targets -- -D warnings` 干净、
+  `scripts/verify-all.sh` 仍为 G1/G2 预期红（S3 收尾）而 G6/G7 绿；
+- 过程中修掉一个真实回归风险：`Selection.excluded` 若与旧的"路径门禁计数"混用，
+  prompt 里的排除说明会把预算截断也算进去——因此加了 `path_gate_excluded_count()` /
+  `oversized_dropped()` 两个访问器，并在平价测试里锁定二者与旧行为的对应关系。
 
 **验收**：spec 14 §10 四条。
 

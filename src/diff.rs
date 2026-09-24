@@ -242,30 +242,18 @@ pub fn section_for_file<'a>(input: &'a str, path: &str) -> Option<&'a str> {
 /// to the model matches the parsed input.
 /// Returns (filtered diff text, number of excluded files).
 ///
-/// Rules: user globs + generated-code heuristic (first 5 added lines contain
-/// `Code generated ... DO NOT EDIT`).
+/// The decision itself lives in [`crate::units::select`] (spec 14 §2): this is a
+/// thin wrapper kept for the anchoring path, which needs the filtered text
+/// without a size budget. Preview and the analysis both go through the selector,
+/// so no caller derives its own answer.
 pub fn filter_text(input: &str, ignore: &globset::GlobSet) -> (String, usize) {
-    let mut out = String::with_capacity(input.len());
-    let mut excluded = 0;
-    for section in split_sections(input) {
-        let keep = match section_path(section) {
-            Some(path) => !ignore.is_match(path) && !looks_generated(section),
-            None => true, // header or sections with an unrecognized path are kept
-        };
-        if keep {
-            out.push_str(section);
-            if !section.ends_with('\n') {
-                out.push('\n');
-            }
-        } else {
-            excluded += 1;
-        }
-    }
-    (out, excluded)
+    let selection = crate::units::select_unbounded(input, ignore);
+    let excluded = selection.excluded_count();
+    (selection.text, excluded)
 }
 
 /// Split on `diff --git ` boundaries (boundary line kept at the start of each section)
-fn split_sections(input: &str) -> Vec<&str> {
+pub(crate) fn split_sections(input: &str) -> Vec<&str> {
     let mut boundaries: Vec<usize> = Vec::new();
     let mut pos = 0;
     for line in input.split_inclusive('\n') {
@@ -286,7 +274,7 @@ fn split_sections(input: &str) -> Vec<&str> {
 }
 
 /// Extract the file path from a section: prefer `+++ b/`, then `--- a/`, finally the diff --git header
-fn section_path(section: &str) -> Option<&str> {
+pub(crate) fn section_path(section: &str) -> Option<&str> {
     let mut old: Option<&str> = None;
     for line in section.lines() {
         if line.starts_with("@@ ") {
@@ -309,7 +297,7 @@ fn section_path(section: &str) -> Option<&str> {
     })
 }
 
-fn looks_generated(section: &str) -> bool {
+pub(crate) fn looks_generated(section: &str) -> bool {
     section
         .lines()
         .filter(|l| l.starts_with('+') && !l.starts_with("+++"))
