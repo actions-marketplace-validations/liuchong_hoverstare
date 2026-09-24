@@ -949,3 +949,146 @@ async fn analysis_failure_status_check_states_coverage() {
         std::env::remove_var("OPENAI_BASE_URL");
     }
 }
+
+/// M19 验收（spec 16 §2）：一次成功运行必须能产出**契约文档**——
+/// JSON 直出 stdout 或按 `--output` 落到工作区内，字段/枚举/排序由契约固定。
+///
+/// 台架要点：模型端点被 mock 成"每次都返回同一个 finding"，diff 有 60 个新增行
+/// （因此走 3 路 pass，两票以上直接入选，不需要 verifier），GitHub 侧只 mock
+/// PR 元数据 / diff / review 列表 / 发布 review。JSON 文档落在工作区内（GITHUB_WORKSPACE
+/// 指向临时目录），既能断言内容，也顺带验证 `--output` 的沙箱落点。
+#[tokio::test]
+async fn run_review_emits_the_json_contract() {
+    let _guard = ENV_LOCK.lock().await;
+    let server = MockServer::start_async().await;
+    let provider = MockServer::start_async().await;
+    let workspace = tempfile::tempdir().unwrap();
+
+    // diff（Accept: v3.diff）：60 个新增行 → 非小 diff → 3 路 pass
+    let mut diff = String::from(
+        "diff --git a/src/a.rs b/src/a.rs\n--- a/src/a.rs\n+++ b/src/a.rs\n@@ -1,0 +1,60 @@\n",
+    );
+    for i in 1..=60 {
+        diff.push_str(&format!("+line {i}\n"));
+    }
+    server
+        .mock_async(|when, then| {
+            when.method(GET)
+                .path("/repos/o/r/pulls/1")
+                .header("accept", "application/vnd.github.v3.diff");
+            then.status(200).body(diff.clone());
+        })
+        .await;
+
+    server
+        .mock_async(|when, then| {
+            when.method(GET).path("/repos/o/r/pulls/1");
+            then.status(200).json_body(serde_json::json!({
+                "number": 1,
+                "head": {"sha": "abc123", "ref": "feat"},
+                "base": {"sha": "def456", "ref": "main"},
+                "draft": false,
+                "user": {"login": "dev"},
+                "author_association": "OWNER"
+            }));
+        })
+        .await;
+
+    server
+        .mock_async(|when, then| {
+            when.method(GET).path("/repos/o/r/pulls/1/reviews");
+            then.status(200).json_body(serde_json::json!([]));
+        })
+        .await;
+
+    let review_mock = server
+        .mock_async(|when, then| {
+            when.method(POST).path("/repos/o/r/pulls/1/reviews");
+            then.status(201).json_body(serde_json::json!({"id": 1}));
+        })
+        .await;
+
+    // 模型：每次调用都返回同一个 finding（3 路一致 → 两票以上直接入选）
+    let completion = serde_json::json!({
+        "id": "1",
+        "object": "chat.completion",
+        "created": 1,
+        "model": "m",
+        "choices": [{
+            "index": 0,
+            "message": {
+                "role": "assistant",
+                "content": r#"{"findings":[{"file":"src/a.rs","line":5,"severity":"high","title":"boom","description":"d"}],"summary":"s"}"#
+            },
+            "finish_reason": "stop"
+        }],
+        "usage": {"prompt_tokens": 100, "completion_tokens": 10, "total_tokens": 110}
+    });
+    provider
+        .mock_async(|when, then| {
+            when.method(POST).path("/v1/chat/completions");
+            then.status(200).json_body(completion.clone());
+        })
+        .await;
+
+    unsafe {
+        std::env::set_var("GITHUB_API_URL", server.base_url());
+        std::env::set_var("OPENAI_BASE_URL", format!("{}/v1", provider.base_url()));
+        std::env::set_var("GITHUB_WORKSPACE", workspace.path());
+    }
+
+    let cfg = cfg_with_status_checks(false);
+    let configured_model = cfg.model.clone();
+    let outcome = hoverstare::orchestrator::run_review(
+        &cfg,
+        &hoverstare::cli::ReviewArgs {
+            pr: Some(1),
+            repo: Some("o/r".into()),
+            format: hoverstare::output::OutputFormat::Json,
+            output: Some("out/result.json".to_string()),
+            ..Default::default()
+        },
+        false,
+    )
+    .await
+    .unwrap();
+
+    assert!(
+        matches!(
+            outcome,
+            hoverstare::orchestrator::Outcome::Published { terminal, .. }
+                if terminal == hoverstare::units::TerminalState::Ok
+        ),
+        "a successful run must report ok coverage, got {outcome:?}"
+    );
+    review_mock.assert_async().await;
+
+    let written = std::fs::read_to_string(workspace.path().join("out/result.json"))
+        .expect("the JSON document must be written to the requested path");
+    let doc: serde_json::Value = serde_json::from_str(&written).unwrap();
+
+    assert_eq!(doc["schema_version"], "1.0");
+    assert_eq!(doc["run"]["repository"], "o/r");
+    assert_eq!(doc["run"]["change_request"], 1);
+    assert_eq!(doc["run"]["terminal"], "ok");
+    assert_eq!(
+        doc["run"]["usage"]["calls"], 3,
+        "three passes were paid for"
+    );
+    assert_eq!(doc["run"]["usage"]["input_tokens"], 300);
+    assert_eq!(doc["run"]["model"], configured_model);
+    assert!(doc["run"]["timing"]["duration_ms"].is_u64());
+    assert_eq!(doc["findings"][0]["path"], "src/a.rs");
+    assert_eq!(doc["findings"][0]["line"], 5);
+    assert_eq!(doc["findings"][0]["side"], "new");
+    assert_eq!(doc["findings"][0]["severity"], "high");
+    assert_eq!(doc["findings"][0]["status"], "new");
+    assert_eq!(doc["units"][0]["status"], "covered");
+    assert_eq!(doc["coverage"]["covered"], 1);
+    assert!(doc["resolutions"].as_array().unwrap().is_empty());
+
+    unsafe {
+        std::env::remove_var("OPENAI_BASE_URL");
+        std::env::remove_var("GITHUB_WORKSPACE");
+    }
+}

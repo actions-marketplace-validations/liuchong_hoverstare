@@ -50,7 +50,7 @@ async fn main() -> anyhow::Result<()> {
     let mode = prompt::ReviewMode::default();
     let instructions =
         hoverstare::instructions::RepoInstructions::load(&cfg.workspace, &base_ref).await;
-    let analysis = orchestrator::analyze(
+    let (analysis, usage) = orchestrator::analyze(
         &cfg,
         &parsed,
         &truncated.text,
@@ -61,6 +61,13 @@ async fn main() -> anyhow::Result<()> {
     )
     .await?;
     tracing::info!("model reported {} findings", analysis.findings.len());
+    tracing::info!(
+        "usage: {} call(s), {} input / {} output tokens ({} cached)",
+        usage.calls,
+        usage.input_tokens,
+        usage.output_tokens,
+        usage.cached_input_tokens
+    );
 
     // Tool trace (spec 04: basis for debugging and replay tests)
     let trace = shared.trace();

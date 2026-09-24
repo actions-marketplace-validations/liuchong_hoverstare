@@ -19,7 +19,7 @@
 
 | 参数 | 取值 | 默认 | 说明 |
 |---|---|---|---|
-| `--format` | `human` / `json` / `sarif` | `human` | 结构化格式写 stdout 的**唯一**内容 |
+| `--format` | `human` / `json` / `sarif` | `human` | 结构化格式写 stdout 的**唯一**内容（`json` 已实现；`sarif` 见 §3 的 T19.3） |
 | `--output <path>` | 文件路径 | 无（stdout） | 写入文件；相对路径限定在工作区内 |
 
 日志一律走 stderr（沿用现有日志契约），保证 stdout 可被管道直接消费。
@@ -35,7 +35,8 @@
     "change_request": 123,          // 无则省略
     "revision": "sha",              // 本次构建使用的版本（沿用流程级 pin）
     "model": "…",
-    "usage": { "input_tokens": 0, "output_tokens": 0, "cached_input_tokens": 0 },
+    "usage": { "input_tokens": 0, "output_tokens": 0, "cached_input_tokens": 0,
+               "calls": 0 },   // 计费口径：每一次 provider 调用都计入（含失败重试与 verifier/reformat）
     "timing": { "started_at": "…", "duration_ms": 0 },
     "terminal": "ok" | "partial" | "empty"     // spec 14 的覆盖终态
   },
@@ -51,9 +52,15 @@
       "status": "new" | "carried_over" | "resolved",
       "related": [ { "path": "…", "line": 0 } ]
   } ],
-  "resolutions": [ "fingerprint…" ]   // 本轮判定已修复
+  "resolutions": [ "fingerprint…" ],  // 本轮判定已修复（指纹，按字典序）
+  // 覆盖计数的扁平视图：与 units[] 同源，方便只关心数字的消费者
+  "coverage": { "total": 0, "covered": 0, "failed": 0, "truncated": 0 }
 }
 ```
+
+`run.revision` 取工作流派生的构建来源（`HOVERSTARE_BUILT_FROM`，spec 08 的流程级 pin）；
+本地运行时没有该变量，写包版本号而不是编造一个 sha。`findings[].line` / `end_line`
+对无法锚定的 finding 为 `null`（spec 06 降级链末端），**不允许**为了"看起来完整"而编造行号。
 
 - **稳定排序**：`units` 按 `unit_id`，`findings` 按 `path` → `line` → `fingerprint`；
 - **路径规范**：一律仓库相对、正斜杠、不使用绝对路径；

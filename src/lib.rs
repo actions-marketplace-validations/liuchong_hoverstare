@@ -15,6 +15,7 @@ pub mod i18n;
 pub mod instructions;
 pub mod mention;
 pub mod orchestrator;
+pub mod output;
 pub mod pipeline;
 pub mod prompt;
 pub mod report;

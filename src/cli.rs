@@ -96,10 +96,15 @@ pub struct ReviewArgs {
     #[arg(long)]
     pub preview: bool,
 
-    /// Output format: `human` (default) or `json`. Structured output for the run
-    /// itself lands with spec 16 (M19); today `json` applies to `--preview`.
+    /// Output format (spec 16 §1): human (default), json, sarif. A structured
+    /// format claims stdout; logs stay on stderr.
     #[arg(long, value_enum, default_value = "human")]
-    pub format: OutputFormat,
+    pub format: crate::output::OutputFormat,
+
+    /// Write the structured document to this workspace-relative path instead of
+    /// stdout (spec 16 §5).
+    #[arg(long)]
+    pub output: Option<String>,
 }
 
 impl Default for ReviewArgs {
@@ -110,57 +115,10 @@ impl Default for ReviewArgs {
             repo: None,
             dry_run: false,
             preview: false,
-            format: OutputFormat::Human,
+            format: crate::output::OutputFormat::Human,
+            output: None,
         }
     }
-}
-
-/// Output format selector (spec 16 §1 defines the full set; `sarif` arrives with
-/// M19, so it is accepted here and rejected with an explicit message until then).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
-pub enum OutputFormat {
-    Human,
-    Json,
-    Sarif,
-}
-
-impl OutputFormat {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            OutputFormat::Human => "human",
-            OutputFormat::Json => "json",
-            OutputFormat::Sarif => "sarif",
-        }
-    }
-}
-
-/// CLI main entry point (shared by the hoverstare and bugbot alias binaries)
-pub async fn run() {
-    let args = Cli::parse();
-
-    let filter = if args.verbose {
-        "hoverstare=debug"
-    } else {
-        "hoverstare=info"
-    };
-    // Logs go to stderr so that stdout stays a clean, pipeable channel: the
-    // preview prints its selection there, and spec 16's structured output will
-    // too (a log line mixed into a JSON document is not a document).
-    tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| filter.into()))
-        .with_target(false)
-        .without_time()
-        .with_writer(std::io::stderr)
-        .init();
-
-    let code = match args.command {
-        Command::Review(review) => run_review(review).await,
-        Command::Mention => run_mention().await,
-        Command::Develop(develop_args) => run_develop(develop_args).await,
-        Command::Serve(serve_args) => run_serve(serve_args).await,
-        Command::Help => run_help(),
-    };
-    std::process::exit(code);
 }
 
 /// One log line per terminal outcome (shared by the run and the preview).
@@ -191,6 +149,35 @@ fn log_review_outcome(outcome: &orchestrator::Outcome) {
 }
 
 /// Config errors are problems the user must fix immediately -> exit 1 (spec 01)
+/// CLI main entry point (shared by the hoverstare and bugbot alias binaries)
+pub async fn run() {
+    let args = Cli::parse();
+
+    let filter = if args.verbose {
+        "hoverstare=debug"
+    } else {
+        "hoverstare=info"
+    };
+    // Logs go to stderr so that stdout stays a clean, pipeable channel: the
+    // preview prints its selection there, and spec 16's structured output will
+    // too (a log line mixed into a JSON document is not a document).
+    tracing_subscriber::fmt()
+        .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| filter.into()))
+        .with_target(false)
+        .without_time()
+        .with_writer(std::io::stderr)
+        .init();
+
+    let code = match args.command {
+        Command::Review(review) => run_review(review).await,
+        Command::Mention => run_mention().await,
+        Command::Develop(develop_args) => run_develop(develop_args).await,
+        Command::Serve(serve_args) => run_serve(serve_args).await,
+        Command::Help => run_help(),
+    };
+    std::process::exit(code);
+}
+
 fn load_config() -> Result<config::Config, i32> {
     config::Config::load().map_err(|e| {
         tracing::error!("config error: {e:#}");
@@ -221,7 +208,13 @@ async fn run_review(args: ReviewArgs) -> i32 {
         }
     };
     if args.preview {
-        return match orchestrator::preview(&cfg, &args, args.format == OutputFormat::Json).await {
+        return match orchestrator::preview(
+            &cfg,
+            &args,
+            args.format == crate::output::OutputFormat::Json,
+        )
+        .await
+        {
             Ok(outcome) => {
                 log_review_outcome(&outcome);
                 0
@@ -232,12 +225,12 @@ async fn run_review(args: ReviewArgs) -> i32 {
             }
         };
     }
-    if args.format != OutputFormat::Human {
-        // Refuse rather than silently ignore: the run's structured output is
-        // spec 16's job (M19), and a quiet no-op would look like it worked.
+    if args.format == crate::output::OutputFormat::Sarif {
+        // SARIF lands with spec 16's renderer (T19.3). Refuse loudly rather than
+        // silently emitting something else: a consumer that parses the wrong
+        // format fails far from the cause.
         tracing::error!(
-            "--format {} is not supported for a run yet (spec 16 / M19); use --preview --format json",
-            args.format.as_str()
+            "--format sarif is not implemented yet (spec 16 §3); use --format json or the default"
         );
         return 1;
     }

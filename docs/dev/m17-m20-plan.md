@@ -157,13 +157,28 @@ SelectOptions / 成组）、`--preview`（人类可读 + JSON）、覆盖声明�
 
 | 任务 | 内容 | 交付物 |
 |---|---|---|
-| T19.1 | `src/output.rs`：`OutputFormat`、`RunMeta`、`FindingView`、稳定排序、路径规范化 | 单测 |
-| T19.2 | JSON 渲染（封闭枚举、`schema_version`） | schema 校验单测 |
+| ✅ T19.1 | `src/output.rs`：`OutputFormat`、`RunMeta`、`FindingView`、稳定排序、路径规范化 | 单测 |
+| ✅ T19.2 | JSON 渲染（封闭枚举、`schema_version`） | schema 校验单测 |
 | T19.3 | SARIF 2.1.0 渲染（级别映射、`partialFingerprints`、`fixes`、`invocations`、文件级 result） | 映射逐项断言 |
-| T19.4 | `ReviewArgs` 增加 `--format`/`--output`；`--output` 路径沙箱 | 路径逃逸拒绝单测 |
+| 🟡 T19.4 | `ReviewArgs` 增加 `--format`/`--output`；`--output` 路径沙箱 | 路径逃逸拒绝单测 |
 | T19.5 | tracing 初始化改 stderr（`src/cli.rs`）+ stdout 纯净性回归断言 | 断言：`--format json` 时 stdout 只有一个可解析 JSON |
-| T19.6 | `pipeline::run` 聚合各 pass + verifier + reformat 的 `Usage` 到 `PipelineStats.usage` | 聚合单测 |
+| ✅ T19.6 | `pipeline::run` 聚合各 pass + verifier + reformat 的 `Usage` 到 `PipelineStats.usage` | 聚合单测 |
 | T19.7 | 文档：README 补 `--format` 用法；threat-model 补"输出不含凭据/绝对路径"的验证方式 | diff 检查 |
+
+**S2a 进度（滚动记录）**：
+
+- ✅ T19.1/T19.2/T19.6 已交付：`src/output.rs`（OutputFormat / FindingView / RunMeta /
+  Report / json / units 段 / 路径规范化 / `emit` 沙箱）、`report::BuiltReview.findings`
+  （与评论渲染同一遍循环产出，两处不可能各说各话）、`UsageTotal` 聚合（含失败 pass、
+  verifier 与 reformat 调用——低报成本是真实缺陷）；预览 JSON 也收敛到 output 模块，
+  全仓只剩一处 JSON 组装
+- 🟡 T19.4 部分：`--format json` 与 `--output`（工作区内、拒绝绝对路径与词法逃逸）已可用；
+  `--format sarif` 目前**明确报错**而不是静默降级（T19.3 落地后放开）
+- 端到端证据：集成测试 `run_review_emits_the_json_contract`——mock GitHub + mock provider，
+  走完"3 路 pass → 两票入选 → 发布 review → 落盘契约文档"，断言 schema_version / run 元数据
+  （terminal=ok、usage.calls=3、input_tokens=300）/ findings（path/line/side/severity/status）/
+  units（covered）/ coverage / resolutions 空
+- 仍未做：T19.3（SARIF 映射）、T19.5（stdout 纯净性的自动化断言）
 
 **验收**：spec 16 §10 四条。
 

@@ -4,6 +4,7 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
+use crate::agent::UsageTotal;
 use crate::agent::rig_backend::RigBackend;
 use crate::agent::tools::ToolShared;
 use crate::cli::ReviewArgs;
@@ -14,6 +15,7 @@ use crate::findings::AnalysisResult;
 use crate::github::{GitHubClient, NewStatus, Repo, StatusState};
 use crate::i18n::T;
 use crate::instructions::RepoInstructions;
+use crate::output;
 use crate::prompt::ReviewMode;
 use crate::report::{self, ReviewContext};
 use crate::state::{self, OpenFinding};
@@ -378,7 +380,7 @@ pub async fn preview(cfg: &Config, args: &ReviewArgs, json: bool) -> anyhow::Res
     let selection = &inputs.analysis_selection;
     if json {
         // Machine-readable: never localized (spec 09's rule for machine payloads).
-        let doc = preview_json(selection, inputs.incremental);
+        let doc = output::preview_json(selection, inputs.incremental);
         println!("{}", serde_json::to_string_pretty(&doc)?);
     } else {
         let t = T::new(cfg.language);
@@ -392,34 +394,6 @@ pub async fn preview(cfg: &Config, args: &ReviewArgs, json: bool) -> anyhow::Res
         units: selection.units.len(),
         excluded: selection.excluded_count(),
         truncated: selection.oversized_dropped().len(),
-    })
-}
-
-/// Machine-readable preview, shape-aligned with spec 16's `units` segment.
-/// Preview units are `pending` by definition: nothing has been dispatched.
-fn preview_json(selection: &units::Selection, incremental: bool) -> serde_json::Value {
-    serde_json::json!({
-        "mode": if incremental { "incremental" } else { "full" },
-        "estimated_tokens": selection.estimated_tokens,
-        "units": selection
-            .units
-            .iter()
-            .map(|u| serde_json::json!({
-                "unit_id": u.unit_id,
-                "files": u.files,
-                "status": "pending",
-            }))
-            .collect::<Vec<_>>(),
-        "excluded": selection
-            .excluded
-            .iter()
-            .map(|e| serde_json::json!({
-                "path": e.path,
-                "reason": e.reason.as_str(),
-                "kept_in_text": e.kept_in_text,
-            }))
-            .collect::<Vec<_>>(),
-        "truncated": selection.oversized_dropped(),
     })
 }
 
@@ -552,7 +526,8 @@ pub async fn run_review(
     gha_group("analysis (multi-pass review / voting / verification)");
     let shared = ToolShared::new(cfg.workspace.clone(), &pr.base.ref_name, cfg.max_tool_calls);
     coverage.start_all();
-    let analysis = match analyze(
+    let started = std::time::Instant::now();
+    let (analysis, usage) = match analyze(
         cfg,
         &analysis_parsed,
         &analysis_text,
@@ -563,7 +538,7 @@ pub async fn run_review(
     )
     .await
     {
-        Ok(a) => {
+        Ok((a, run_usage)) => {
             coverage.cover_all();
             tracing::info!(
                 "coverage: {}/{} unit(s) covered (terminal={})",
@@ -571,7 +546,7 @@ pub async fn run_review(
                 coverage.denominator().len(),
                 coverage.terminal().as_str()
             );
-            a
+            (a, run_usage)
         }
         Err(e) => {
             coverage.fail_all(format!("{e:#}"));
@@ -699,6 +674,32 @@ pub async fn run_review(
             &t,
         )
         .await;
+    }
+
+    // Structured output (spec 16 §1): emitted after publishing so the document
+    // describes the run that actually happened. Publishing is unaffected — the
+    // document is an additional artifact, not a replacement for the review.
+    if args.format.is_structured() {
+        let meta = output::RunMeta {
+            repository: repo.full_name(),
+            change_request: Some(pr_ref.number),
+            revision: output::revision_from_env(),
+            model: cfg.model.clone(),
+            usage,
+            duration_ms: started.elapsed().as_millis(),
+            terminal: coverage.terminal(),
+        };
+        let document = output::json(&output::RunReport {
+            meta: &meta,
+            findings: &built.findings,
+            ledger: &coverage,
+            resolutions: &analysis.resolved_finding_ids,
+        });
+        output::emit(
+            &output::to_pretty(&document)?,
+            args.output.as_deref(),
+            &cfg.workspace,
+        )?;
     }
 
     gha_group_end();
@@ -860,7 +861,7 @@ pub async fn analyze(
     shared: &Arc<ToolShared>,
     mode: &ReviewMode<'_>,
     instructions: &RepoInstructions,
-) -> anyhow::Result<AnalysisResult> {
+) -> anyhow::Result<(AnalysisResult, UsageTotal)> {
     if !instructions.is_empty() {
         tracing::info!(
             "loaded {} repo instruction file(s): {}",
@@ -898,34 +899,14 @@ pub async fn analyze(
             st.pass_findings
         );
     }
-    Ok(outcome.analysis)
+    Ok((outcome.analysis, outcome.stats.usage))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn selection_with_one_unit() -> units::Selection {
-        let diff = "diff --git a/src/a.rs b/src/a.rs\n--- a/src/a.rs\n+++ b/src/a.rs\n@@ -1,0 +1,1 @@\n+x\n";
-        units::select(
-            diff,
-            &units::SelectOptions::new(&globset::GlobSetBuilder::new().build().unwrap(), 400),
-        )
-    }
-
-    #[test]
-    fn preview_document_is_pending_and_shape_aligned() {
-        let selection = selection_with_one_unit();
-        let doc = preview_json(&selection, false);
-        assert_eq!(doc["mode"], "full");
-        assert_eq!(doc["units"][0]["unit_id"], "changeset:src/a.rs");
-        assert_eq!(doc["units"][0]["status"], "pending");
-        assert_eq!(doc["truncated"].as_array().unwrap().len(), 0);
-        assert!(doc["estimated_tokens"].as_u64().unwrap() > 0);
-    }
-
-    #[test]
-    fn failure_notes_state_the_coverage() {
+    fn ledger_with_one_failed_unit() -> units::CoverageLedger {
         let diff = "diff --git a/src/a.rs b/src/a.rs\n--- a/src/a.rs\n+++ b/src/a.rs\n@@ -1,0 +1,1 @@\n+x\n";
         let selection = units::select(
             diff,
@@ -933,18 +914,18 @@ mod tests {
         );
         let mut ledger = units::CoverageLedger::freeze(&selection.units);
         ledger.fail_all("provider 500");
+        ledger
+    }
+
+    #[test]
+    fn failure_notes_state_the_coverage() {
+        let ledger = ledger_with_one_failed_unit();
         let note = failure_note("analysis failed (fail-open)", &ledger);
         assert!(note.contains("coverage 0/1"), "{note}");
         assert!(note.contains("1 failed"), "{note}");
 
-        let ledger = units::CoverageLedger::freeze(&selection.units);
+        let ledger = ledger_with_one_failed_unit();
         let note = failure_note("diff over budget, analysis abandoned", &ledger);
         assert!(note.contains("coverage 0/1"), "{note}");
-    }
-
-    #[test]
-    fn preview_document_reports_incremental_mode() {
-        let doc = preview_json(&selection_with_one_unit(), true);
-        assert_eq!(doc["mode"], "incremental");
     }
 }

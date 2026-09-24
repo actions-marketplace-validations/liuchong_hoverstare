@@ -10,6 +10,7 @@ use crate::diff::ParsedDiff;
 use crate::findings::Finding;
 use crate::github::{NewInlineComment, NewReview};
 use crate::i18n::T;
+use crate::output::{FindingStatus, FindingView, RelatedLocation};
 use crate::state;
 
 pub struct ReviewContext<'a> {
@@ -51,12 +52,52 @@ fn anchor_for(f: &Finding, diff: &ParsedDiff) -> Anchor {
     }
 }
 
+/// Contract view of one finding (spec 16 §2). Line fields default to the
+/// anchored location when there is one and stay empty when there is not: a
+/// document that invents a line for an unanchored finding is worse than one that
+/// omits it.
+fn view_for(f: &Finding, diff: &ParsedDiff) -> FindingView {
+    let (line, end_line) = match anchor_for(f, diff) {
+        Anchor::Exact(line) | Anchor::Snapped(line) => (Some(line), Some(line)),
+        Anchor::BodySection => (None, None),
+    };
+    let fingerprint = match line {
+        Some(line) => state::fingerprint(&f.file, diff.line_content(&f.file, line), &f.title),
+        // Unanchored: fall back to the reported line so the fingerprint is still
+        // stable across runs of the same input.
+        None => state::fingerprint(&f.file, None, &f.title),
+    };
+    FindingView {
+        fingerprint,
+        path: f.file.clone(),
+        line,
+        end_line,
+        severity: f.severity,
+        title: f.title.clone(),
+        body: f.description.clone(),
+        suggestion: f.suggestion.clone(),
+        status: FindingStatus::New,
+        related: f
+            .additional_locations
+            .iter()
+            .map(|l| RelatedLocation {
+                path: l.file.clone(),
+                line: l.line,
+            })
+            .collect(),
+    }
+}
+
 /// Result of build_review: the review itself + incremental statistics
 pub struct BuiltReview {
     pub review: NewReview,
     /// Number of findings already in the historical unresolved set, skipped
     /// this time to avoid duplicate comments (spec 07)
     pub carried_over: usize,
+    /// The same findings as a contract view (spec 16): populated in the same pass
+    /// that renders them, so the comment body and the structured document can
+    /// never disagree about what was found where.
+    pub findings: Vec<FindingView>,
 }
 
 pub fn build_review(
@@ -73,10 +114,12 @@ pub fn build_review(
     let mut carried_over = 0usize;
     // Finding list for the metadata (fingerprint + location + severity)
     let mut meta_findings: Vec<(String, String, u64, crate::config::Severity)> = Vec::new();
+    let mut views: Vec<FindingView> = Vec::new();
 
     for f in findings {
         if f.severity < cfg.severity_threshold {
             nitpicks.push(f);
+            views.push(view_for(f, diff));
             continue;
         }
         match anchor_for(f, diff) {
@@ -89,15 +132,31 @@ pub fn build_review(
                 let fp = state::fingerprint(&f.file, diff.line_content(&f.file, line), &f.title);
                 if open_fps.contains(&fp) {
                     carried_over += 1;
-                    continue; // historical thread still open, do not comment again (spec 07)
+                    // Already an open thread: not commented again, but still part of
+                    // this run's result set (spec 16 status = carried_over).
+                    let mut view = view_for(f, diff);
+                    view.fingerprint = fp;
+                    view.line = Some(line);
+                    view.end_line = Some(line);
+                    view.status = FindingStatus::CarriedOver;
+                    views.push(view);
+                    continue;
                 }
+                let mut view = view_for(f, diff);
+                view.fingerprint = fp.clone();
+                view.line = Some(line);
+                view.end_line = Some(line);
+                views.push(view);
                 meta_findings.push((fp.clone(), f.file.clone(), line, f.severity));
                 buckets
                     .entry((f.file.clone(), line))
                     .or_default()
                     .push(render_inline(f, snapped, &fp, &t));
             }
-            Anchor::BodySection => cross_cutting.push(f),
+            Anchor::BodySection => {
+                cross_cutting.push(f);
+                views.push(view_for(f, diff));
+            }
         }
     }
 
@@ -128,6 +187,7 @@ pub fn build_review(
             comments,
         },
         carried_over,
+        findings: views,
     }
 }
 

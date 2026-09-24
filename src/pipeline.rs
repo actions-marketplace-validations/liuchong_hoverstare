@@ -10,7 +10,7 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use crate::agent::tools::ToolShared;
-use crate::agent::{AgentBackend, Budget, ReviewRequest, ToolRegistry};
+use crate::agent::{AgentBackend, Budget, ReviewRequest, ToolRegistry, Usage, UsageTotal};
 use crate::config::Config;
 use crate::diff::ParsedDiff;
 use crate::findings::{self, AnalysisResult, Finding};
@@ -67,6 +67,9 @@ pub struct PipelineStats {
     pub voted_in: usize,
     pub verified_in: usize,
     pub dropped: usize,
+    /// Token accounting for the whole run, including verifier and reformat calls
+    /// (spec 16 §2: a total that omits them under-reports the cost).
+    pub usage: UsageTotal,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -91,7 +94,7 @@ pub async fn run(
     // Straight-through path (spec 05: passes=1 and no verify is equivalent to
     // having no pipeline)
     if passes == 1 && !verify {
-        let analysis = analyze_with_backend(
+        let (analysis, usage) = analyze_with_backend(
             backend,
             cfg,
             parsed,
@@ -106,6 +109,7 @@ pub async fn run(
             analysis,
             stats: PipelineStats {
                 passes_run: 1,
+                usage,
                 ..Default::default()
             },
         });
@@ -137,9 +141,13 @@ pub async fn run(
     let mut summaries: Vec<(usize, String)> = Vec::new();
     let mut resolved_union: BTreeSet<String> = BTreeSet::new();
     let mut failures = 0usize;
+    // Token accounting for the whole run (spec 16 §2), including failed passes:
+    // a pass that burned tokens and failed was still paid for.
+    let mut usage = UsageTotal::default();
     for (i, r) in results.into_iter().enumerate() {
         match r {
-            Ok(a) => {
+            Ok((a, pass_usage)) => {
+                usage.add(&pass_usage);
                 resolved_union.extend(a.resolved_finding_ids);
                 summaries.push((a.findings.len(), a.summary));
                 per_pass.push(a.findings);
@@ -181,7 +189,12 @@ pub async fn run(
             dropped += 1;
             continue;
         }
-        if verify_finding(backend, cfg, shared, diff_text, &f).await {
+        let (accepted_by_verifier, verify_usage) =
+            verify_finding(backend, cfg, shared, diff_text, &f).await;
+        if let Some(u) = verify_usage {
+            usage.add(&u);
+        }
+        if accepted_by_verifier {
             accepted.push(f);
             verified_in += 1;
         } else {
@@ -209,6 +222,7 @@ pub async fn run(
             voted_in,
             verified_in,
             dropped,
+            usage,
         },
     })
 }
@@ -370,7 +384,7 @@ async fn verify_finding(
     shared: &Arc<ToolShared>,
     diff_text: &str,
     f: &Finding,
-) -> bool {
+) -> (bool, Option<Usage>) {
     let section = crate::diff::section_for_file(diff_text, &f.file).unwrap_or("");
     let finding_json = serde_json::json!({
         "file": f.file,
@@ -402,16 +416,21 @@ async fn verify_finding(
         Ok(r) => r,
         Err(e) => {
             tracing::warn!("verifier call failed (treating as rejected): {e}");
-            return false;
+            return (false, None);
         }
     };
-    let Some(v) = findings::extract_json_value(run.raw_output.trim()) else {
-        tracing::warn!("verifier output is not JSON (treating as rejected)");
-        return false;
+    let accepted = match findings::extract_json_value(run.raw_output.trim()) {
+        None => {
+            tracing::warn!("verifier output is not JSON (treating as rejected)");
+            false
+        }
+        Some(v) => {
+            let verdict = v["verdict"].as_str().unwrap_or("rejected");
+            let confidence = v["confidence"].as_f64().unwrap_or(0.0);
+            verdict == "confirmed" && confidence >= 0.6
+        }
     };
-    let verdict = v["verdict"].as_str().unwrap_or("rejected");
-    let confidence = v["confidence"].as_f64().unwrap_or(0.0);
-    verdict == "confirmed" && confidence >= 0.6
+    (accepted, Some(run.usage))
 }
 
 // ---------------------------------------------------------------------------
@@ -432,7 +451,7 @@ async fn single_shot(
     instructions: &RepoInstructions,
     extra_system: &str,
     temperature: Option<f64>,
-) -> anyhow::Result<AnalysisResult> {
+) -> anyhow::Result<(AnalysisResult, Usage)> {
     let req = ReviewRequest {
         system_prompt: prompt::system_prompt(cfg, instructions) + extra_system,
         user_prompt: prompt::user_prompt(diff_text, parsed, cfg, truncated_files, mode),
@@ -453,7 +472,8 @@ async fn single_shot(
         run.raw_output.len(),
         run.raw_output
     );
-    findings::parse_analysis(&run.raw_output).map_err(|e| anyhow::anyhow!("{e}"))
+    let analysis = findings::parse_analysis(&run.raw_output).map_err(|e| anyhow::anyhow!("{e}"))?;
+    Ok((analysis, run.usage))
 }
 
 /// Fault-tolerance pipeline (spec 04): analyze -> parse failure -> reformat
@@ -468,8 +488,11 @@ pub async fn analyze_with_backend(
     shared: &Arc<ToolShared>,
     mode: &ReviewMode<'_>,
     instructions: &RepoInstructions,
-) -> anyhow::Result<AnalysisResult> {
+) -> anyhow::Result<(AnalysisResult, UsageTotal)> {
     let mut last_err: Option<anyhow::Error> = None;
+    // Every provider call counts, including failed attempts and the reformat
+    // pass: the number reported to the user must be the number that was paid for.
+    let mut usage = UsageTotal::default();
 
     for attempt in 1..=MAX_ANALYSIS_ATTEMPTS {
         if attempt > 1 {
@@ -499,15 +522,17 @@ pub async fn analyze_with_backend(
             }
         };
 
+        usage.add(&run.usage);
         match findings::parse_analysis(&run.raw_output) {
-            Ok(a) => return Ok(a),
+            Ok(a) => return Ok((a, usage)),
             Err(e) => {
                 tracing::warn!("output parsing failed: {e}");
                 if !run.raw_output.trim().is_empty() {
                     match reformat_with_backend(backend, cfg, &run.raw_output).await {
-                        Ok(a) => {
+                        Ok((a, reformat_usage)) => {
+                            usage.add(&reformat_usage);
                             tracing::info!("reformat pass recovered successfully");
-                            return Ok(a);
+                            return Ok((a, usage));
                         }
                         Err(e2) => tracing::warn!("reformat pass failed: {e2}"),
                     }
@@ -560,7 +585,7 @@ async fn reformat_with_backend(
     backend: &dyn AgentBackend,
     cfg: &Config,
     raw_output: &str,
-) -> anyhow::Result<AnalysisResult> {
+) -> anyhow::Result<(AnalysisResult, Usage)> {
     let req = ReviewRequest {
         system_prompt: prompt::REFORMAT_SYSTEM_PROMPT.to_string(),
         user_prompt: prompt::reformat_user_prompt(raw_output),
@@ -573,7 +598,8 @@ async fn reformat_with_backend(
         temperature: cfg.temp(0.0),
     };
     let run = backend.review(req).await?;
-    findings::parse_analysis(&run.raw_output).map_err(|e| anyhow::anyhow!("{e}"))
+    let analysis = findings::parse_analysis(&run.raw_output).map_err(|e| anyhow::anyhow!("{e}"))?;
+    Ok((analysis, run.usage))
 }
 
 #[cfg(test)]
@@ -583,6 +609,16 @@ mod tests {
     use crate::config::Severity;
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// Deterministic per-call usage so aggregation can be asserted (not "some
+    /// numbers were reported" but "exactly these numbers").
+    fn fake_usage() -> Usage {
+        Usage {
+            input_tokens: 100,
+            output_tokens: 20,
+            cached_input_tokens: 50,
+        }
+    }
 
     /// Distinguishes passes by whether the system_prompt contains the "focus",
     /// and returns scripted outputs in order
@@ -616,6 +652,7 @@ mod tests {
                     raw_output: out
                         .unwrap_or(r#"{"verdict":"rejected","confidence":0.2,"reason":"no"}"#)
                         .to_string(),
+                    usage: fake_usage(),
                     ..Default::default()
                 });
             }
@@ -628,6 +665,7 @@ mod tests {
             match out {
                 Ok(text) => Ok(ReviewRun {
                     raw_output: text.to_string(),
+                    usage: fake_usage(),
                     ..Default::default()
                 }),
                 Err(msg) => Err(AgentError::Backend(msg.to_string())),
@@ -937,7 +975,7 @@ mod tests {
                 r#"{"findings":[{"file":"a.rs","line":2,"severity":"high","title":"t","description":"d"}],"summary":"s"}"#,
             ),
         ]);
-        let r = analyze_with_backend(
+        let (r, usage) = analyze_with_backend(
             &backend,
             &cfg(),
             &parsed,
@@ -951,13 +989,16 @@ mod tests {
         .unwrap();
         assert_eq!(r.findings.len(), 1);
         assert_eq!(backend.reformat_calls.load(Ordering::SeqCst), 1);
+        // The initial call plus the reformat pass: both were paid for.
+        assert_eq!(usage.calls, 2);
+        assert_eq!(usage.input_tokens, 200);
     }
 
     #[tokio::test]
     async fn empty_output_retries_without_reformat() {
         let (parsed, text) = diff_input(100);
         let backend = FakeBackend::new(vec![Ok(""), Ok(r#"{"findings":[],"summary":"s"}"#)]);
-        let r = analyze_with_backend(
+        let (r, usage) = analyze_with_backend(
             &backend,
             &cfg(),
             &parsed,
@@ -972,6 +1013,9 @@ mod tests {
         assert_eq!(r.findings.len(), 0);
         assert_eq!(backend.calls.load(Ordering::SeqCst), 2);
         assert_eq!(backend.reformat_calls.load(Ordering::SeqCst), 0);
+        // An empty output is retried, and the retry counted: failed calls are
+        // still paid for (spec 16 §2).
+        assert_eq!(usage.calls, 2);
     }
 
     #[tokio::test]
@@ -1004,7 +1048,7 @@ mod tests {
     async fn backend_error_then_success() {
         let (parsed, text) = diff_input(100);
         let backend = FakeBackend::new(vec![Err("boom"), Ok(r#"{"findings":[],"summary":"s"}"#)]);
-        let r = analyze_with_backend(
+        let (r, usage) = analyze_with_backend(
             &backend,
             &cfg(),
             &parsed,
@@ -1018,5 +1062,38 @@ mod tests {
         .unwrap();
         assert_eq!(r.findings.len(), 0);
         assert_eq!(backend.calls.load(Ordering::SeqCst), 2);
+        // The call that failed at the backend level burned no reported tokens;
+        // only the successful one is counted.
+        assert_eq!(usage.calls, 1);
+    }
+
+    #[tokio::test]
+    async fn multi_pass_usage_includes_every_pass_and_the_verifier() {
+        let (parsed, text) = diff_input(200);
+        // Three passes, one reporting a finding: a single vote must go through the
+        // verifier, and the verifier call is charged like any other (spec 16 §2).
+        let one = r#"{"findings":[{"file":"src/a.rs","line":2,"severity":"high","title":"t","description":"d"}],"summary":"s"}"#;
+        let none = r#"{"findings":[],"summary":"s"}"#;
+        let backend = FakeBackend::new(vec![Ok(one), Ok(none), Ok(none)]);
+        let outcome = run(
+            &backend,
+            &cfg(),
+            &parsed,
+            &text,
+            &[],
+            &shared(),
+            &mode(),
+            &ins(),
+        )
+        .await
+        .unwrap();
+        let usage = outcome.stats.usage;
+        assert!(
+            usage.calls >= 4,
+            "3 passes + verifier expected to be counted, got {}",
+            usage.calls
+        );
+        assert_eq!(usage.input_tokens, 100 * usage.calls as u64);
+        assert_eq!(usage.cached_input_tokens, 50 * usage.calls as u64);
     }
 }

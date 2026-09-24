@@ -83,6 +83,35 @@ pub struct Usage {
     pub cached_input_tokens: u64,
 }
 
+/// Usage accumulated over one run (spec 16 §2 `run.usage`).
+///
+/// `calls` matters as much as the token counts: a run that reports tokens but no
+/// call count cannot distinguish "one expensive call" from "ten cheap ones",
+/// which is exactly what the cost questions need.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct UsageTotal {
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cached_input_tokens: u64,
+    pub calls: usize,
+}
+
+impl UsageTotal {
+    pub fn add(&mut self, usage: &Usage) {
+        self.input_tokens += usage.input_tokens;
+        self.output_tokens += usage.output_tokens;
+        self.cached_input_tokens += usage.cached_input_tokens;
+        self.calls += 1;
+    }
+
+    pub fn merge(&mut self, other: UsageTotal) {
+        self.input_tokens += other.input_tokens;
+        self.output_tokens += other.output_tokens;
+        self.cached_input_tokens += other.cached_input_tokens;
+        self.calls += other.calls;
+    }
+}
+
 impl Usage {
     pub fn add(&mut self, other: Usage) {
         self.input_tokens += other.input_tokens;
