@@ -255,15 +255,18 @@ SelectOptions / 成组）、`--preview`（人类可读 + JSON）、覆盖声明�
   `taiki-e/install-action` 的 binstall 回退只认 Rust crate（actionlint/gitleaks 都不在其中），
   改为从上游 release 装并核对 sha256——而且**校验和步骤要保留上游文件名**（`sha256sum -c`
   按记录名查找），这一段现在先在本地跑通再写进 workflow。
-  期间 CI 四次红都不是环境运气，而是真实缺陷：测试依赖 CI 才有的 `GITHUB_ACTIONS`、
-  `::group::` 标记写到了 stdout、两个工具装不上、校验和文件名不匹配。
+  期间 CI **五次**红都不是环境运气，而是真实缺陷：测试依赖 CI 才有的 `GITHUB_ACTIONS`、
+  `::group::` 标记写到了 stdout、两个工具装不上、校验和文件名不匹配，最后也是最关键的一条：
+  `verify-all.sh` 的参数循环**漏了 `shift`**——`--strict` / `--full` 会让它无限空转（无输出、
+  永不结束），而本地从来没跑过带参形式、自测也只覆盖 `--list` 与未知参数，于是一路漏到 CI。
+  教训写成两条：门禁自测必须把**每个 flag** 都跑一遍（并限定时间）；门禁必须能"自己说清卡在哪"
+  （每道门禁独立超时 + 进度行）。
   AGENTS.md §7 #36 记录了"本地绿 ≠ CI 绿，push 后必须看 run"这条纪律。
 - ✅ T20.11：CONTRIBUTING 增补门禁表与"上游 action 升级流程"（含分支引用类 action 的 toolchain 陷阱）
 - **诚实边界（本回合实际验证到哪一步）**：
   - G1/G2/G6/G7：本地 `scripts/verify-all.sh` 全绿（`all gates passed (0 skipped)`），门禁自测 18/18；
-  - G4：**测量**在本地完成（`cargo llvm-cov --workspace --summary-only` → 80.36% 行覆盖，
-    阈值取 79.8%），但**门禁自身的 `--full` 运行没在本地跑完**——插桩重建在本机耗时过长
-    （超过 20 分钟仍在编译期），继续占用不值得，故改为在 CI 首次运行；
+  - G4：**门禁本身已在本地跑通**（`./scripts/verify-all.sh --full` → `G4 PASS`，8.6 秒/暖缓存），
+    基线来自 `cargo llvm-cov --workspace --summary-only` 的 80.36% 行覆盖，阈值 79.8%；
   - G3/G5：gitleaks / cargo-deny / cargo-audit 在编写机未安装（`--strict` 下缺工具即失败，
     不会静默通过），同样在 CI 首次真实运行；
   - 因此 M20 的完成声明只到"本地可跑的门禁全绿 + CI job 已接线"，**CI 首次运行的结果需要

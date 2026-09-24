@@ -46,6 +46,11 @@ while [ "$#" -gt 0 ]; do
       exit 2
       ;;
   esac
+  # Without this the loop spins forever on a flag that does not exit (--strict,
+  # --full): no output, no progress, until the CI job's timeout kills it. Found by
+  # reading the script after two CI runs died silently — the self-test had never
+  # been taught to pass those flags.
+  shift
 done
 
 names=()

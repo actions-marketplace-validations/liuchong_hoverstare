@@ -116,6 +116,21 @@ expect_line_count "verify-all lists seven gates" "$tmp/list.txt" 7
 ./scripts/verify-all.sh --bogus >"$tmp/bogus.txt" 2>&1
 expect_status "verify-all rejects unknown arguments" 2 "$?"
 
+# Every documented flag must terminate. `--strict`/`--full` once fell through to an
+# unterminated argument loop: the script spun forever with no output, and only CI's
+# job timeout made that visible. A bounded run here catches it in a second.
+if command -v timeout >/dev/null 2>&1 || command -v gtimeout >/dev/null 2>&1; then
+  bound="$(command -v timeout || command -v gtimeout)"
+  "$bound" 120 ./scripts/verify-all.sh --strict >"$tmp/strict.txt" 2>&1
+  expect_status "verify-all --strict terminates and passes" 0 "$?"
+  # --full is the heavy set: only assert that it terminates, not that it passes
+  # (its tools may be absent locally, which --strict-less runs report as SKIP).
+  "$bound" 120 ./scripts/verify-all.sh --full >"$tmp/full.txt" 2>&1
+  expect_absent "verify-all --full does not hang before its first gate" "$tmp/full.txt" "timed out"
+else
+  printf 'SKIP  flag termination cases (no timeout binary)\n'
+fi
+
 # The tree is expected red until the one-off cleanup lands (G1 pinning, G2 README
 # alignment). What is asserted here is tree-independent: every gate that ran
 # appears in the summary. A gate that fails without being recorded once slipped

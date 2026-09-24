@@ -300,6 +300,11 @@ cargo fmt && cargo clippy --workspace --all-targets -- -D warnings
     `GITHUB_ACTIONS`）看不出问题，CI 上却把 `--format json` 的输出污染成无法解析。
     修法两层：标记改 `eprintln!`（stdout 只放产品），并且测试**显式**给子进程设
     `GITHUB_ACTIONS=true`，让这条只在 CI 出现的路径在本地也跑一遍。
+37. **脚本的参数循环必须 `shift`，自测必须跑遍每个 flag**：`verify-all.sh` 的参数循环漏了
+    `shift`，于是 `--strict` / `--full`（CI 用的正是这两个）会无限空转——无输出、永不结束，
+    靠 CI job 超时才停下，而且取消时缓冲输出全丢，等于零线索。两条制度化的修法：
+    自测对**每个** flag 都做一次限时运行（`timeout N … --flag`，断言能终止）；
+    门禁自身要能"说清卡在哪"（每道门禁独立超时 + 打印开始行）。
 
 
 ## 7.5 Dogfood 验证手册（开发模式端到端怎么测）
