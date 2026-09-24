@@ -40,6 +40,8 @@ agentic 审查，把高置信度缺陷以行内评论发到 PR 上并跨 commit 
 
 > 每个里程碑都是可独立验收的垂直切片，按顺序开发。估时以单人全职为参考。
 
+> M17–M20 的实现设计与施工安排另见 [docs/dev/m17-m20-design.md](../docs/dev/m17-m20-design.md) 与 [docs/dev/m17-m20-plan.md](../docs/dev/m17-m20-plan.md)（spec 定义目标，设计文档定义落法）。
+
 ### M1 — 端到端骨架（约 1.5 周）✅ 2026-07-17 完成
 
 **目标**：在 demo PR 上发出第一条合法行内评论。单 pass、无投票、无增量。

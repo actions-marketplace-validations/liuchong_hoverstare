@@ -1,0 +1,150 @@
+# M17–M20 施工计划
+
+> 目标状态由 [`specs/14`–`17`](../../specs/README.md) 定义，落地方式由
+> [`m17-m20-design.md`](m17-m20-design.md) 定义，本文定义**怎么排、谁依赖谁、怎么验收**。
+> 冲突时以 spec 为准；实现中发现 spec 不成立，先改 spec 再改代码。
+
+## 0. 目标（goal 文案）
+
+```
+按 specs/14–17 与 docs/dev/m17-m20-plan.md，在 hoverstare 落地 M17–M20：
+(1) M17 审查单元与覆盖契约：units::select 纯函数（预览与运行同源）、--preview 零模型调用、
+    覆盖账本（分母冻结 / 单元状态机 / 终态 ok|partial|empty）+ 摘要覆盖声明；
+(2) M18 语言规则包：内置规则包数据形态与校验、路径匹配（含歧义嗅探与显式回退）、
+    [LANGUAGE RULES] 注入契约、rules list / rules check 只读自检；
+(3) M19 输出契约：--format human|json|sarif + --output、JSON 契约、SARIF 2.1.0 映射、
+    日志改 stderr 保证 stdout 纯净、usage 聚合；
+(4) M20 工程门禁：引用 pin / 文档结构 / 依赖审计 / 覆盖率不劣化 / 密钥扫描 / spec 索引检查，
+    verify-all.sh 一条命令，CI 阻塞，含 15 处引用 pin、六份 README 结构对齐等一次性收尾。
+
+约束：spec 是单一事实来源（先改 spec 再改代码）；每个任务完成即跑
+cargo fmt --all -- --check、cargo clippy --workspace --all-targets -- -D warnings、
+cargo test --workspace 与 scripts/verify-all.sh，并单独提交（Conventional Commits、签名提交）；
+文档（specs / docs / AGENTS.md 运维经验）与实现同步；不做任何发布
+（不打 tag、不 cargo publish、不建 Release、不推 Marketplace）。
+
+完成定义：specs/14–17 的 §验收全部满足，specs/README.md 的 M17–M20 勾选完成，CI 全绿。
+```
+
+## 1. 批次、依赖与估时
+
+```
+P0 门禁脚本骨架 ──► S1 M17 审查单元与覆盖 ──┬──► S2a M19 输出契约 ──┐
+（无依赖，立即收益）                        └──► S2b M18 规则包 ────┴──► S3 M20 收尾
+```
+
+| 阶段 | 内容 | 依赖 | 估时 |
+|---|---|---|---|
+| P0 | G1/G2/G6/G7 脚本 + `verify-all.sh`（先给后续每个提交做自检） | 无 | 1 天 |
+| S1 | M17：审查单元、`select`、`--preview`、覆盖账本 | P0（便于每步自检） | 3–4 天 |
+| S2a | M19：`--format`/`--output`、JSON、SARIF、日志改 stderr | S1（`units`/`terminal`/`usage` 来源） | 2–3 天 |
+| S2b | M18：规则包数据、匹配、注入、`rules check` | 可与 S2a 并行（仅共享 `config.rs`/`i18n.rs` 的小改动） | 2–3 天 |
+| S3 | M20 收尾：pin 全部引用、README 结构对齐、覆盖率基线、密钥扫描、CI 接线 | 全部 | 1–2 天 |
+
+合计约 9–13 人日（单人全职口径）。**P0 先做**的理由：门禁是自己后续每个提交的安全网，
+且不依赖任何代码改动。
+
+## 2. P0 — 门禁脚本骨架
+
+| 任务 | 内容 | 交付物 | 验收 |
+|---|---|---|---|
+| T20.1 | `scripts/verify-action-pins.sh`（行首锚定正则，`./` 豁免，非法形态一律失败） | 脚本 + 正例/反例 fixture | 在干净树上失败并列出全部 15 处待 pin 引用（此时是预期红） |
+| T20.2 | `scripts/check-doc-structure.sh`（`##` 序列比对，打印差异行号） | 脚本 + fixture | 六份 README 比对输出英文 12 / 其余 11 的差异点 |
+| T20.3 | `scripts/verify-spec-index.sh`（spec 索引 + `src/` 模块对应，含豁免清单） | 脚本 | 当前树全绿（spec 14–17 已在索引内） |
+| T20.4 | `scripts/verify-all.sh`（默认 G1/G2/G6/G7；`--full` 加 G3/G4） | 脚本 | 退出码聚合正确；`--full` 在缺工具时给出安装提示而非静默跳过 |
+| T20.5 | （不在 P0 做）CI 接线留到 S3 的 T20.10 | — | 见下方说明：避免 CI 长时间红 |
+
+> 说明：P0 的脚本在树还没修好时必然报红。因此 **P0 只把脚本做出来并在本地使用，
+> CI 接线与一次性修复一起放到 S3**，避免 CI 长时间红着失去信号价值。
+
+## 3. S1 — M17 审查单元与覆盖契约
+
+| 任务 | 内容 | 交付物 |
+|---|---|---|
+| T17.1 | `src/units.rs`：`ReviewUnit`/`Selection`/`ExcludeReason`/`UnitState`/`CoverageLedger`/`TerminalState` | 类型 + 单测 |
+| T17.2 | `units::select`：纯函数，复用 `looks_generated`/`path_priority`/`split_sections`；v1 启用四类原因 | 单测（纯函数性、四类原因、`select_strict` 开关矩阵） |
+| T17.3 | `diff::filter_text`/`truncate_text` 改为 `select` 薄包装并标 `deprecated`；迁移仓库内调用点 | 12 项既有 diff 单测仍绿 |
+| T17.4 | `orchestrator::run_review` 用 `select` 一次算出 `Selection`，传进 `analyze` → `pipeline::run` | 选择结果在预览与运行间逐项一致（回归护栏测试） |
+| T17.5 | 覆盖账本接线（分母冻结、状态迁移、终态计算），`Outcome::Published` 增加 `terminal`/`usage` | 状态机四类终态单测 |
+| T17.6 | `--preview`（`ReviewArgs`）+ 在 LLM 凭据校验前短路；人类可读输出 + `--format json` 的 `units` 段 | 端到端：真实 PR 预览零 provider 请求（日志断言） |
+| T17.7 | `report::build_review` 渲染覆盖声明行（`T::coverage_line`，`report_coverage` 默认开） | 摘要渲染单测 + 真实 PR 目视 |
+| T17.8 | 文档同步：AGENTS.md 运维经验（若有坑）+ 本设计文档行号刷新 | diff 检查 |
+
+**验收**：spec 14 §10 四条。
+
+## 4. S2a — M19 输出契约 / S2b — M18 规则包
+
+### S2a（M19）
+
+| 任务 | 内容 | 交付物 |
+|---|---|---|
+| T19.1 | `src/output.rs`：`OutputFormat`、`RunMeta`、`FindingView`、稳定排序、路径规范化 | 单测 |
+| T19.2 | JSON 渲染（封闭枚举、`schema_version`） | schema 校验单测 |
+| T19.3 | SARIF 2.1.0 渲染（级别映射、`partialFingerprints`、`fixes`、`invocations`、文件级 result） | 映射逐项断言 |
+| T19.4 | `ReviewArgs` 增加 `--format`/`--output`；`--output` 路径沙箱 | 路径逃逸拒绝单测 |
+| T19.5 | tracing 初始化改 stderr（`src/cli.rs`）+ stdout 纯净性回归断言 | 断言：`--format json` 时 stdout 只有一个可解析 JSON |
+| T19.6 | `pipeline::run` 聚合各 pass + verifier + reformat 的 `Usage` 到 `PipelineStats.usage` | 聚合单测 |
+| T19.7 | 文档：README 补 `--format` 用法；threat-model 补"输出不含凭据/绝对路径"的验证方式 | diff 检查 |
+
+**验收**：spec 16 §10 四条。
+
+### S2b（M18）
+
+| 任务 | 内容 | 交付物 |
+|---|---|---|
+| T18.1 | `src/rules.rs`：`RulePack`/`RuleCheck`/`RuleExample`/`Resolution`，`include_str!` 加载 + `validate()` | schema 校验单测（含"无指令性表述"） |
+| T18.2 | 匹配：first match wins → 专指性排序 → 多包上限（`max_rule_packs`）→ 无命中走 default | 匹配矩阵单测 |
+| T18.3 | 歧义嗅探（首批 `.m`，≤4KB，失败回退 + 日志） | 嗅探命中/失败回退单测 |
+| T18.4 | 注入：`prompt::system_prompt` 增加 `rule_hit`，渲染 `[LANGUAGE RULES]`（字节上限 + 截断标记） | 提示渲染单测 |
+| T18.5 | 初始包 rust / go / ts-js / python / ci-yaml / default（含正反样例） | 六份包文件 + 评审 |
+| T18.6 | `rules list` / `rules check <path>` 子命令（只读、免 LLM 凭据） | 命令级测试 |
+| T18.7 | 配置：`rule_packs`、`max_rule_packs` + 校验文案 | 配置单测 |
+
+**验收**：spec 15 §12 四条。
+
+> S2a 与 S2b 的写集重叠很小（都碰 `config.rs`/`i18n.rs`）：**不建议并行改同一文件**，
+> 若并行推进，约定 S2a 独占 `config.rs` 的 `--format` 相关改动、S2b 独占规则包相关字段，
+> 各自提交后再合并 `i18n.rs` 的新增文案。
+
+## 5. S3 — M20 收尾（含一次性工作）
+
+| 任务 | 内容 | 验收 |
+|---|---|---|
+| T20.6 | pin 全部 15 处 `uses:`（action.yml 2 / ci 4 / hoverstare 5 / release 3 / reposcope 1）为 40 位 SHA + `# vX.Y.Z` | `scripts/verify-action-pins.sh` 绿 |
+| T20.7 | 六份 README 结构对齐（补英文本已有的 `## Contributing` 段，六语同批） | `check-doc-structure.sh` 绿 |
+| T20.8 | 覆盖率基线（记录现状 + 排除项）与 `--full` 判定 | `verify-all.sh --full` 绿 |
+| T20.9 | 密钥扫描（`.gitleaks.toml` + 平台推送保护） | gitleaks 干净 |
+| T20.10 | CI 接线：`gates` job（G1–G7），工具版本固定 | CI 全绿；人为破坏任一项 → 变红 |
+| T20.11 | CONTRIBUTING 增补门禁说明与上游 action 升级步骤 | diff 检查 |
+
+**验收**：spec 17 §7 四条。
+
+## 6. 提交与回滚策略
+
+- **一个任务一次提交**，Conventional Commits（`feat(units): …`、`feat(rules): …`、`feat(output): …`、
+  `chore(gates): …`、`docs(specs): …`），全部**签名**提交；任务内先跑质量门再提交；
+- **spec 先于代码**：任何行为调整先落在 spec 提交里，代码提交引用 spec 章节；
+- **不做发布**：不打 tag、不 `cargo publish`、不建 Release、不推 Marketplace（AGENTS.md §4.8）；
+- **回滚**：按任务 revert（代码与其同批文档一起回）；spec 不回滚——它是目标状态，
+  若目标变化就改 spec 而不是恢复旧 spec；
+- **进度登记**：每完成一个任务勾选 `specs/README.md` 的 M17–M20 条目，并在本文表格补 `✅`。
+
+## 7. 风险登记
+
+| 风险 | 触发条件 | 影响 | 缓解 |
+|---|---|---|---|
+| `pipeline::run` 参数继续膨胀 | S1 加 `Selection`、S2b 加 `rule_hit` | 调用点难改 | 用 `ReviewPrompt` 结构体一次性聚合，后续只加字段 |
+| 排除规则改变审查范围 | 误把 `select_strict` 默认开 | 覆盖口径与范围同时变化 | v1 只启用与现状等价四类（spec 14 §2） |
+| tracing 改 stderr 影响既有假设 | S2a T19.5 | 文档/使用方假设 stdout | 与假设同批更新，并记入 AGENTS.md 运维经验 |
+| 覆盖率门禁一上来就红 | S3 T20.8 | 阻塞开发 | 基线记录现状，只要求"不劣化" |
+| 一次 pin 太多上游 | S3 T20.6 | 人工核对量大、易漏 | 脚本一次列全，逐处替换后由脚本复核 |
+| CI 因门禁长时间红 | P0 就接线 | 信号疲劳 | P0 只本地跑；CI 接线与修复同批（S3） |
+
+## 8. 完成定义（DoD）
+
+1. `specs/14`–`17` 的 §验收 全部满足，可逐条指出证据（测试名 / 日志 / 真实 PR 记录）；
+2. `cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets -- -D warnings`、
+   `cargo test --workspace`、`scripts/verify-all.sh --full` 全绿；
+3. `specs/README.md` 的 M17–M20 全部勾选，本计划表格状态列更新；
+4. 文档与实现无漂移：spec、`docs/DESIGN.md`、`docs/threat-model.md`、AGENTS.md 运维经验同步；
+5. 无任何发布动作，工作区干净、提交已推送。

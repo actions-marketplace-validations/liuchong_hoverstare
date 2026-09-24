@@ -154,6 +154,9 @@ merge = ["write"]
 按可独立验收的里程碑推进（任务分解与验收标准见
 [specs/README.md](../specs/README.md#里程碑计划)）：
 
+> M17–M20 的实现设计（模块/类型/接线）见 [dev/m17-m20-design.md](dev/m17-m20-design.md)，
+> 施工顺序、批次与验收见 [dev/m17-m20-plan.md](dev/m17-m20-plan.md)。
+
 | 里程碑 | 内容 | 状态 |
 |---|---|---|
 | M1 | 端到端骨架：demo PR 上发出第一条合法行内评论 | ✅ |

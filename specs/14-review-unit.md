@@ -84,6 +84,12 @@ Decision { unit | excluded(ExcludeReason), estimated_tokens }
 | `default-path` | 内建默认排除路径（vendor、构建产物、锁文件等） |
 | `oversized` | 单单元估算 token 超过配置上限 |
 
+**v1 启用的原因集合（其余保留但默认关闭）**：`deleted`、`binary`、`ignore-rule`、`oversized`
+四类与现状等价（二进制/超大文件目前由平台侧"无 patch"体现），因此默认启用；
+`secret-path`、`extension`、`default-path` 会**改变审查范围**，默认关闭，需要时由配置显式开启
+（`select_strict = true`）。理由：一次改动同时改变"审查范围"与"记账口径"会让归因失效——
+先让账本忠实反映现状，再单独调整范围。
+
 预算类排除（`budget`）**不属于**选择：它发生在运行期，记入覆盖账本（§4）而非排除原因。
 
 ## 3. 零成本预览
@@ -146,6 +152,7 @@ spec 01），但**不允许静默**：单元级失败必须显式出现在报告
 |---|---|---|
 | `report_coverage` | `true` | 是否在摘要/结构化输出中呈现覆盖声明 |
 | `group_units` | `false` | 是否启用确定性成组（§1） |
+| `select_strict` | `false` | 是否启用会缩小审查范围的三类排除（§2） |
 
 `--preview` 是 CLI 参数，不写进配置文件。
 
