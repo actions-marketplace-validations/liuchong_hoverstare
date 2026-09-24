@@ -288,7 +288,9 @@ async fn prepare_inputs(cfg: &Config, args: &ReviewArgs, force_full: bool) -> an
     // reads the same selection's text instead of deriving its own.
     let full_selection = units::select(
         &full_diff,
-        &units::SelectOptions::new(&cfg.ignore, cfg.max_diff_kb).strict(cfg.select_strict),
+        &units::SelectOptions::new(&cfg.ignore, cfg.max_diff_kb)
+            .strict(cfg.select_strict)
+            .group_units(cfg.group_units),
     );
     let anchor_parsed = ParsedDiff::parse(&full_selection.text);
 
@@ -318,7 +320,9 @@ async fn prepare_inputs(cfg: &Config, args: &ReviewArgs, force_full: bool) -> an
         }
         units::select(
             &delta,
-            &units::SelectOptions::new(&cfg.ignore, cfg.max_diff_kb).strict(cfg.select_strict),
+            &units::SelectOptions::new(&cfg.ignore, cfg.max_diff_kb)
+                .strict(cfg.select_strict)
+                .group_units(cfg.group_units),
         )
     } else {
         full_selection.clone()

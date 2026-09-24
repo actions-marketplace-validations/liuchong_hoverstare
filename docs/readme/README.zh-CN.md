@@ -138,6 +138,7 @@ fail_closed = false                   # true 时分析失败会让 CI 失败
 status_checks = false                 # 写 hoverstare / hoverstare-findings 检查
 report_coverage = true                # 在审查正文里写明覆盖（已覆盖/总单元数）
 select_strict = false                 # 额外排除：敏感路径、依赖/生成产物、未知类型
+group_units = false                   # 把多语言变体 / 迁移方向对 / 测试伴随文件合成一个单元
 language = "en"     # 输出语言：en/zh-CN/ru/fr/de/es
 set_temperature = true                # 端点只接受默认温度时置 false
 thinking = "enabled"

@@ -81,7 +81,7 @@ P0 门禁脚本骨架 ──► S1 M17 审查单元与覆盖 ──┬──► 
 | ✅ T17.8 | 文档同步：AGENTS.md 运维经验（若有坑）+ 本设计文档行号刷新 | diff 检查 |
 | ✅ T17.9 | httpmock 端到端失败链路测试：`status_checks = true` + 模型不可达 → 状态检查描述携带覆盖计数 | 新增集成测试（`analysis_failure_status_check_states_coverage`：断言描述含 `coverage 0/1` 与 `analysis failed (fail-open)`，且 outcome 仍为 `AnalysisFailed`） |
 | ✅ T17.10 | `select_strict`：启用 `secret-path` / `extension` / `default-path` 三类保留原因 | 交付：`SelectOptions`（strict 开关 + 未来 group_units 的落点）、内建语料表（密钥/产物）、固定评估顺序、`is_reviewable_path`；5 项新单测（默认零变化 / 严格排除带原因 / 多命中归属 / 语料编译与根目录+嵌套形式 / 扩展名白名单） |
-| T17.11 | `group_units`：确定性成组（镜像文件/双语资源/up-down 迁移等配对规则），成组后单元仍是并发与记账单位 | 配置 + 配对规则 + 单测 |
+| ✅ T17.11 | `group_units`：确定性成组 | 交付：三条配对规则（语言/地区变体、迁移方向对、测试伴随文件）、`SelectOptions.group_units`、组 id **由组键派生**（不是成员路径）；6 项新单测覆盖"默认不成组 / 变体合并且 id 稳定 / 方向对与测试伴随 / 无关文件不合并 / 成组只改记账不改派发文本 / 指纹形态" |
 
 **S1 进度（滚动记录）**：
 
@@ -114,6 +114,11 @@ P0 门禁脚本骨架 ──► S1 M17 审查单元与覆盖 ──┬──► 
 - 真实验证（T17.7 追加）：失败链路（假 provider、真实 PR）→ exit 0、日志
   `coverage: 0/1 unit(s) covered (terminal=partial)`、不写任何评论（fail-open 未被削弱）；
   中文预览 → `预览：全量审查 — 1 个审查单元，约 329 tokens，未调用模型`；
+- ✅ T17.11 已交付：成组是"记账与派发粒度"，不是"派发内容"——单测直接断言
+  `plain.text == grouped.text`。实现中单测抓到一处真实缺陷并已修：组 id 最初取"成员路径字典序最小者"，
+  加入 `README.ja.md` 后组身份从 `group:README.md` 变成 `group:README.ja.md`（同一个组换身份），
+  改为由组键派生后稳定（spec 14 §1 已记录这条教训与对应测试名）；真实验证以单测为准——
+  公开 PR 里"同时改语言变体/测试伴随对"的样本是偶发的，不为凑证据去构造
 - ✅ T17.10 已交付 + 真实验证（公开 PR `googleapis/google-cloud-go#20570`，154 文件）：
   默认 → 141 单元（含 46 个 `*.pb.go`）；`select_strict = true` → 95 单元、46 个
   `default-path`、`extension` 归零、被排除项全部带原因；`Cargo.lock` 在两种模式下都归

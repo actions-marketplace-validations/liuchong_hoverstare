@@ -149,6 +149,7 @@ fail_closed = false                   # true — ошибки анализа л�
 status_checks = false                 # писать проверки hoverstare / hoverstare-findings
 report_coverage = true                # указывать покрытие (единиц проверено/всего) в теле обзора
 select_strict = false                 # дополнительно пропускать секретные пути, vendor/артефакты, неизвестные типы
+group_units = false                   # объединять языковые варианты / пары миграций / тестовые файлы в одну единицу
 language = "en"        # язык вывода: en/zh-CN/ru/fr/de/es
 set_temperature = true                # false для endpoint'ов, принимающих только температуру по умолчанию
 thinking = "enabled"

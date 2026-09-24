@@ -149,6 +149,7 @@ fail_closed = false                   # true → analysis failures fail CI
 status_checks = false                 # write hoverstare / hoverstare-findings checks
 report_coverage = true                # state the coverage (units covered/total) in the review body
 select_strict = false                 # also skip secret paths, vendored/generated paths, unknown kinds
+group_units = false                   # merge locale variants / migration pairs / test siblings into one unit
 language = "en"                       # output language: en/zh-CN/ru/fr/de/es
 set_temperature = true                # false for endpoints that only accept default temperature
 thinking = "enabled"

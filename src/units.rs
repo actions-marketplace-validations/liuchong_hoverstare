@@ -339,6 +339,8 @@ pub struct SelectOptions<'a> {
     /// Enable the exclusion classes that *shrink* what is reviewed:
     /// `secret-path`, `default-path`, `extension` (spec 14 §2).
     pub strict: bool,
+    /// Merge deterministic sibling files into one unit (spec 14 §1).
+    pub group_units: bool,
 }
 
 impl<'a> SelectOptions<'a> {
@@ -347,6 +349,7 @@ impl<'a> SelectOptions<'a> {
             ignore,
             max_diff_kb: Some(max_diff_kb),
             strict: false,
+            group_units: false,
         }
     }
 
@@ -356,11 +359,17 @@ impl<'a> SelectOptions<'a> {
             ignore,
             max_diff_kb: None,
             strict: false,
+            group_units: false,
         }
     }
 
     pub fn strict(mut self, strict: bool) -> Self {
         self.strict = strict;
+        self
+    }
+
+    pub fn group_units(mut self, group_units: bool) -> Self {
+        self.group_units = group_units;
         self
     }
 }
@@ -557,7 +566,7 @@ fn select_impl(input: &str, opts: &SelectOptions<'_>) -> Selection {
 
     // Units are derived from the text that is actually dispatched, so the
     // denominator can never claim more than the model received.
-    let mut units: Vec<ReviewUnit> = Vec::new();
+    let mut members: Vec<(&str, &str)> = Vec::new();
     for section in diff::split_sections(&text) {
         let Some(path) = diff::section_path(section) else {
             continue;
@@ -565,17 +574,12 @@ fn select_impl(input: &str, opts: &SelectOptions<'_>) -> Selection {
         if is_deleted(section) {
             continue;
         }
-        let unit_id = format!("{}:{}", UnitSource::Changeset.as_str(), path);
-        if units.iter().any(|u| u.unit_id == unit_id) {
+        if members.iter().any(|(p, _)| *p == path) {
             continue; // first wins, matching the documented dedup rule
         }
-        units.push(ReviewUnit {
-            unit_id,
-            source: UnitSource::Changeset,
-            files: vec![path.to_string()],
-            unit_fp: content_fingerprint(path, section),
-        });
+        members.push((path, section));
     }
+    let units = build_units(&members, opts.group_units);
 
     let estimated_tokens = estimate_tokens(&text);
 
@@ -585,6 +589,169 @@ fn select_impl(input: &str, opts: &SelectOptions<'_>) -> Selection {
         excluded,
         estimated_tokens,
     }
+}
+
+/// Turn selected sections into units, optionally merging deterministic siblings
+/// (spec 14 §1). Grouping changes dispatch/accounting granularity only: findings
+/// always hang off a concrete file.
+fn build_units(members: &[(&str, &str)], group: bool) -> Vec<ReviewUnit> {
+    if !group {
+        return members
+            .iter()
+            .map(|(path, section)| single_unit(path, section))
+            .collect();
+    }
+
+    let mut keys: Vec<(GroupKey, Vec<usize>)> = Vec::new();
+    for (index, (path, _)) in members.iter().enumerate() {
+        let key = group_key(path);
+        match keys.iter_mut().find(|(k, _)| *k == key) {
+            Some((_, indexes)) => indexes.push(index),
+            None => keys.push((key, vec![index])),
+        }
+    }
+
+    let mut units = Vec::with_capacity(keys.len());
+    for (key, indexes) in keys {
+        if indexes.len() == 1 {
+            let (path, section) = members[indexes[0]];
+            units.push(single_unit(path, section));
+            continue;
+        }
+        let mut group_members: Vec<(&str, &str)> = indexes.iter().map(|i| members[*i]).collect();
+        group_members.sort_by(|a, b| a.0.cmp(b.0));
+        units.push(ReviewUnit {
+            unit_id: group_unit_id(&key),
+            source: UnitSource::Changeset,
+            files: group_members
+                .iter()
+                .map(|(p, _)| (*p).to_string())
+                .collect(),
+            unit_fp: group_content_fingerprint(&group_members),
+        });
+    }
+    units
+}
+
+/// Identity of a grouped unit, derived from the group key so that adding or
+/// removing a variant never changes it (spec 14 §1): deriving it from a member
+/// path made the group change identity as soon as a variant sorted earlier
+/// (`README.ja.md` before `README.md`), which a unit test caught.
+fn group_unit_id(key: &GroupKey) -> String {
+    let name = if key.ext.is_empty() {
+        key.stem.clone()
+    } else {
+        format!("{}.{}", key.stem, key.ext)
+    };
+    let id = if key.dir.is_empty() {
+        name
+    } else {
+        format!("{}/{name}", key.dir)
+    };
+    format!("{}:group:{id}", UnitSource::Changeset.as_str())
+}
+
+fn single_unit(path: &str, section: &str) -> ReviewUnit {
+    ReviewUnit {
+        unit_id: format!("{}:{}", UnitSource::Changeset.as_str(), path),
+        source: UnitSource::Changeset,
+        files: vec![path.to_string()],
+        unit_fp: content_fingerprint(path, section),
+    }
+}
+
+/// Deterministic pairing key: (directory, stem with the variant suffix removed,
+/// extension). See spec 14 §1 for the three rules this encodes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GroupKey {
+    dir: String,
+    stem: String,
+    ext: String,
+}
+
+fn group_key(path: &str) -> GroupKey {
+    let (dir, name) = match path.rsplit_once('/') {
+        Some((dir, name)) => (dir.to_string(), name),
+        None => (String::new(), path),
+    };
+    let (stem, ext) = match name.rsplit_once('.') {
+        Some((stem, ext)) => (stem.to_string(), ext.to_ascii_lowercase()),
+        None => (name.to_string(), String::new()),
+    };
+    let stem = strip_test_suffix(&stem);
+    let stem = strip_direction_suffix(&stem);
+    let stem = strip_locale_suffix(&stem);
+    GroupKey { dir, stem, ext }
+}
+
+fn strip_test_suffix(stem: &str) -> String {
+    for suffix in ["_test", ".test", "_spec", ".spec"] {
+        if let Some(base) = stem.strip_suffix(suffix).filter(|b| !b.is_empty()) {
+            return base.to_string();
+        }
+    }
+    stem.to_string()
+}
+
+fn strip_direction_suffix(stem: &str) -> String {
+    for suffix in [".up", "_up", ".down", "_down"] {
+        if let Some(base) = stem.strip_suffix(suffix).filter(|b| !b.is_empty()) {
+            return base.to_string();
+        }
+    }
+    stem.to_string()
+}
+
+fn strip_locale_suffix(stem: &str) -> String {
+    // Longest locale-looking tail first (`zh-CN` must resolve to `zh-CN`, not to
+    // a bare `zh` plus a leftover `CN`), which means walking separators left to
+    // right and taking the first tail that is a recognised language tag.
+    for (index, _) in stem.match_indices(['.', '_', '-']) {
+        let (base, tail) = stem.split_at(index);
+        let tail = &tail[1..];
+        if !base.is_empty() && is_locale(tail) {
+            return base.to_string();
+        }
+    }
+    stem.to_string()
+}
+
+/// Language / region tags accepted as a translatable variant. Kept explicit so a
+/// file called `report-final.md` is never grouped by accident.
+fn is_locale(tag: &str) -> bool {
+    const LANGUAGES: &[&str] = &[
+        "en", "zh", "ja", "ko", "ru", "fr", "de", "es", "pt", "it", "nl", "pl", "tr", "ar", "hi",
+        "vi", "th", "id", "uk", "cs", "sv", "da", "fi", "no", "nb", "el", "he", "hu", "ro", "sk",
+        "bg", "hr", "sl", "lt", "lv", "et", "ca", "eu", "gl", "sr", "ms", "fil", "sw",
+    ];
+    let lower = tag.to_ascii_lowercase();
+    let (language, region) = match lower.split_once('-') {
+        Some((language, region)) => (language, Some(region)),
+        None => (lower.as_str(), None),
+    };
+    if !LANGUAGES.contains(&language) {
+        return false;
+    }
+    match region {
+        None => true,
+        // `zh-cn`, `pt-br`, `en-us`: region subtags are two letters or a script tag.
+        Some(region) => {
+            region.len() == 2 || region.len() == 4 || region == "hans" || region == "hant"
+        }
+    }
+}
+
+/// Fingerprint of a group: members sorted by path, each folded in with its path.
+fn group_content_fingerprint(members: &[(&str, &str)]) -> String {
+    let mut h = Sha1::new();
+    for (path, section) in members {
+        h.update(path.as_bytes());
+        h.update(b"\n");
+        h.update(section.as_bytes());
+        h.update(b"\n");
+    }
+    let digest = h.finalize();
+    digest[..8].iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// A whole-file deletion: no new content to review.
@@ -989,6 +1156,128 @@ diff --git a/Dockerfile b/Dockerfile
             sel.units.len(),
             1,
             "Dockerfile stays reviewable under strict"
+        );
+    }
+
+    fn section(path: &str, body: &str) -> String {
+        format!(
+            "diff --git a/{path} b/{path}\n--- a/{path}\n+++ b/{path}\n@@ -1,0 +1,1 @@\n+{body}\n"
+        )
+    }
+
+    #[test]
+    fn grouping_is_off_by_default() {
+        let input = format!(
+            "{}{}",
+            section("README.md", "en"),
+            section("README.zh-CN.md", "zh")
+        );
+        let sel = select(&input, &SelectOptions::new(&no_ignore(), 4000));
+        assert_eq!(sel.units.len(), 2);
+    }
+
+    #[test]
+    fn grouping_merges_locale_variants_with_a_stable_id() {
+        let input = format!(
+            "{}{}{}",
+            section("README.md", "en"),
+            section("README.zh-CN.md", "zh"),
+            section("README.ru.md", "ru")
+        );
+        let sel = select(
+            &input,
+            &SelectOptions::new(&no_ignore(), 4000).group_units(true),
+        );
+        assert_eq!(sel.units.len(), 1);
+        assert_eq!(
+            sel.units[0].files,
+            vec!["README.md", "README.ru.md", "README.zh-CN.md"],
+            "members are sorted by path"
+        );
+        assert_eq!(sel.units[0].unit_id, "changeset:group:README.md");
+
+        // Adding another variant must not change the identity of the group.
+        let more = format!("{input}{}", section("README.ja.md", "ja"));
+        let sel_more = select(
+            &more,
+            &SelectOptions::new(&no_ignore(), 4000).group_units(true),
+        );
+        assert_eq!(sel_more.units.len(), 1);
+        assert_eq!(sel_more.units[0].unit_id, sel.units[0].unit_id);
+    }
+
+    #[test]
+    fn grouping_merges_migration_direction_pairs_and_test_siblings() {
+        let migrations = format!(
+            "{}{}",
+            section("db/001_init.up.sql", "create table"),
+            section("db/001_init.down.sql", "drop table")
+        );
+        let sel = select(
+            &migrations,
+            &SelectOptions::new(&no_ignore(), 4000).group_units(true),
+        );
+        assert_eq!(sel.units.len(), 1);
+        assert_eq!(
+            sel.units[0].files,
+            vec!["db/001_init.down.sql", "db/001_init.up.sql"]
+        );
+        assert_eq!(sel.units[0].unit_id, "changeset:group:db/001_init.sql");
+
+        let source = format!(
+            "{}{}",
+            section("src/store.rs", "impl"),
+            section("src/store_test.rs", "test")
+        );
+        let sel = select(
+            &source,
+            &SelectOptions::new(&no_ignore(), 4000).group_units(true),
+        );
+        assert_eq!(sel.units.len(), 1);
+        assert_eq!(
+            sel.units[0].files,
+            vec!["src/store.rs", "src/store_test.rs"]
+        );
+        assert_eq!(sel.units[0].unit_id, "changeset:group:src/store.rs");
+    }
+
+    #[test]
+    fn grouping_leaves_unrelated_files_alone() {
+        let input = format!(
+            "{}{}{}",
+            section("src/a.rs", "a"),
+            section("src/b.rs", "b"),
+            section("report-final.md", "x")
+        );
+        let sel = select(
+            &input,
+            &SelectOptions::new(&no_ignore(), 4000).group_units(true),
+        );
+        assert_eq!(sel.units.len(), 3, "different names must not group");
+        assert!(sel.units.iter().all(|u| u.files.len() == 1));
+    }
+
+    #[test]
+    fn grouping_changes_the_coverage_denominator_only() {
+        let input = format!(
+            "{}{}",
+            section("README.md", "en"),
+            section("README.zh-CN.md", "zh")
+        );
+        let plain = select(&input, &SelectOptions::new(&no_ignore(), 4000));
+        let grouped = select(
+            &input,
+            &SelectOptions::new(&no_ignore(), 4000).group_units(true),
+        );
+        assert_eq!(plain.units.len(), 2);
+        assert_eq!(grouped.units.len(), 1);
+        // The dispatched text is identical either way: grouping is accounting,
+        // not dispatch, in v1 (spec 14 §1).
+        assert_eq!(plain.text, grouped.text);
+        assert_eq!(
+            grouped.units[0].unit_fp.len(),
+            16,
+            "group fingerprint is well formed"
         );
     }
 

@@ -152,6 +152,7 @@ fail_closed = false                   # true → Analysefehler lassen CI fehlsch
 status_checks = false                 # hoverstare / hoverstare-findings Checks schreiben
 report_coverage = true                # Abdeckung (geprüfte/Einheiten gesamt) im Review-Text nennen
 select_strict = false                 # zusätzlich Geheimnisse, Vendor-/Artefaktpfade, unbekannte Typen überspringen
+group_units = false                   # Sprachvarianten / Migrationspaare / Testdateien zu einer Einheit zusammenfassen
 language = "en"        # Ausgabesprache: en/zh-CN/ru/fr/de/es
 set_temperature = true                # false für Endpoints, die nur Standard-Temperatur akzeptieren
 thinking = "enabled"

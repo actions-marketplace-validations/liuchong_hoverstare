@@ -40,6 +40,8 @@ pub struct Config {
     /// Enable the exclusion classes that shrink what is reviewed
     /// (`secret-path` / `default-path` / `extension`, spec 14 §2).
     pub select_strict: bool,
+    /// Merge deterministic sibling files into one review unit (spec 14 §1).
+    pub group_units: bool,
     pub instructions: String,
     /// Whether to set temperature on requests (some endpoints only accept the
     /// default; when false the field is not sent)
@@ -485,6 +487,7 @@ struct TomlConfig {
     status_checks: Option<bool>,
     report_coverage: Option<bool>,
     select_strict: Option<bool>,
+    group_units: Option<bool>,
     instructions: Option<String>,
     set_temperature: Option<bool>,
     thinking: Option<String>,
@@ -779,6 +782,7 @@ impl Config {
             status_checks: t.status_checks.unwrap_or(false),
             report_coverage: t.report_coverage.unwrap_or(true),
             select_strict: t.select_strict.unwrap_or(false),
+            group_units: t.group_units.unwrap_or(false),
             instructions: t.instructions.unwrap_or_default(),
             set_temperature: t.set_temperature.unwrap_or(true),
             reasoning,

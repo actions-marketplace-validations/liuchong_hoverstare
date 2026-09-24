@@ -151,6 +151,7 @@ fail_closed = false                   # true → los fallos de análisis rompen 
 status_checks = false                 # escribir checks hoverstare / hoverstare-findings
 report_coverage = true                # indicar la cobertura (unidades revisadas/total) en el cuerpo de la revisión
 select_strict = false                 # omitir también rutas secretas, vendor/artefactos y tipos desconocidos
+group_units = false                   # agrupar variantes de idioma / pares de migración / archivos de prueba en una unidad
 language = "en"        # idioma de salida: en/zh-CN/ru/fr/de/es
 set_temperature = true                # false para endpoints que solo aceptan la temperatura por defecto
 thinking = "enabled"
