@@ -1126,11 +1126,16 @@ async fn run_review_emits_the_json_contract() {
         sarif["runs"][0]["results"][0]["locations"][0]["physicalLocation"]["region"]["startLine"],
         5
     );
-    assert!(
-        sarif["runs"][0]["results"][0]["partialFingerprints"][hoverstare::output::FINGERPRINT_KEY]
-            .as_str()
-            .is_some_and(|fp| !fp.is_empty()),
-        "SARIF must carry the fingerprint used for cross-run dedup"
+    let sarif_fingerprint = sarif["runs"][0]["results"][0]["partialFingerprints"]
+        [hoverstare::output::FINGERPRINT_KEY]
+        .as_str()
+        .expect("SARIF must carry the fingerprint used for cross-run dedup");
+    // spec 16 §10-2: the same finding keeps its fingerprint across runs, which is
+    // what makes a re-run deduplicate instead of alerting again. The JSON run
+    // above saw the same diff and the same finding, so the two must agree.
+    assert_eq!(
+        sarif_fingerprint, doc["findings"][0]["fingerprint"],
+        "the fingerprint must not depend on the renderer or on the run"
     );
 
     unsafe {

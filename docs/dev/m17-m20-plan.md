@@ -186,6 +186,11 @@ SelectOptions / 成组）、`--preview`（人类可读 + JSON）、覆盖声明�
   断言 `--format json` 的 stdout 是单个可解析文档、其中不含 INFO/WARN，且 stderr 确实有日志
 - 🟡 T19.7 部分：英文 README 补了 `--preview` / `--format` 用法、威胁模型补了输出边界验证方式；
   **五份翻译 README 的同步随 T20.7（README 结构对齐）一起做**，避免同一段文字改两遍
+- 端到端验收（spec 16 §10，逐条）：① 真实运行路径产出 JSON 与 SARIF 并逐字段断言
+  （mock provider/GitHub 走完整 run：3 路 pass → 投票 → 发布 → 落盘）；② 同一 finding 的指纹
+  跨两次运行/两种渲染器一致（去重的前提）；③ 默认 human 行为未变（既有 report/pipeline 测试）；
+  ④ 单测覆盖 §9 各项 + 质量门全绿。**未做**真实 PR + 真实模型的付费运行（按成本取舍），
+  证据是"真实代码路径 + 桩 provider"的端到端测试与单测，不是真实模型输出
 
 **验收**：spec 16 §10 四条。
 
