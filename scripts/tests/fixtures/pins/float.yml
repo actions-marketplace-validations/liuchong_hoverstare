@@ -1,0 +1,14 @@
+# Fixture: floating major tags (the current state of this repository) plus a
+# "statuses: write" permission line that must NOT be mistaken for a reference.
+name: fixture-float
+on: workflow_dispatch
+permissions:
+  contents: read
+  statuses: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2

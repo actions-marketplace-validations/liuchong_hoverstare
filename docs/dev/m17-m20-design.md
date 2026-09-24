@@ -247,8 +247,9 @@ pub fn sarif(result: &AnalysisResult, units: &CoverageLedger, meta: &RunMeta) ->
 |---|---|---|
 | `scripts/verify-action-pins.sh` | 遍历 `action.yml` + `.github/workflows/*.yml`：每个 `uses:` 必须是 `owner/repo@<40hex>` 且行尾 `# vX.Y.Z`；非该形态（引号、flow 映射、短 SHA、缺注释）**一律失败** | 用 `grep -n` 定位 + `awk`/`sed` 判定；`./` 本地引用豁免 |
 | `scripts/check-doc-structure.sh` | 提取六份 README 的 `##` 序列（数量 + 层级），不一致即失败并打印差异 | `awk` 提取、`diff` 比对；输出直接给出行号，便于修 |
-| `scripts/verify-spec-index.sh` | `specs/*.md`（除 `README.md`、`validation-*.md`）必须出现在索引表；`src/` 顶层模块名必须能对上某个 spec（豁免清单在脚本内） | 现状豁免：`event.rs`、`git.rs`、`i18n.rs`、`sanitize.rs`、`prompt.rs`、`findings.rs` 归属既有 spec，施工时把这份清单写实 |
-| `scripts/verify-all.sh` | 依次跑 G1/G2/G5/G6/G7；`--full` 追加 G3/G4 | 退出码聚合；CI 用同一入口 |
+| `scripts/verify-spec-index.sh` | `specs/*.md`（除 `README.md`、`validation-*.md`）必须出现在索引表；每个 `src/` 顶层模块的模块注释（前 12 行）必须声明它实现的 spec（`main`/`lib` 为薄入口豁免） | 豁免不靠硬编码清单：要求模块自证 spec，新增模块必须先写 spec 注释 |
+| `scripts/verify-all.sh` | 默认 G1/G2/G6/G7；`--full` 追加 G3/G4/G5；`--strict` 把缺工具算失败（CI 用） | 每个执行过的门禁必须有一行结果；退出码聚合；CI 用同一入口 |
+| `scripts/tests/test-gates.sh` | 门禁自测：正例/反例 fixture 断言退出码与诊断文本 | 覆盖 G1 的五种非法形态、G2 的围栏忽略与漂移、汇总完整性 |
 
 ### 5.2 一次性工作（施工时不能漏）
 

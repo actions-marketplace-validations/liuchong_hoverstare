@@ -67,10 +67,12 @@
 - 触发理由：本仓库有 `.env~` 备份文件泄漏被拦截的前科（AGENTS.md §4.7），
   仅靠人工评审不足以防住这类文件。
 
-### G6 workflow 有效性
+### G6 workflow 与脚本有效性
 
-- 保持现有 actionlint 步骤（仅拦"工作流无效"类错误，shellcheck 风格提示不在门禁范围）；
-- 新增：门禁脚本自身被 shellcheck 检查（脚本是我们自己的门禁，不能自己带病）。
+- actionlint：本地优先用已安装的 `actionlint` 二进制，CI 沿用 docker 镜像；
+  配置与现有 CI 一致（`-shellcheck=`，只拦"工作流无效"类错误）；
+- shellcheck：`scripts/*.sh` 与 `scripts/tests/*.sh` 全部检查（脚本是我们自己的门禁，
+  不能自己带病）；两者任一失败即 G6 失败。
 
 ### G7 spec 与模块一致
 
@@ -81,11 +83,29 @@
 ## 2. 运行方式
 
 ```
-scripts/verify-all.sh        # 本地一条命令：G1 G2 G5 G6 G7（快）
-scripts/verify-all.sh --full # 追加 G3 G4（需要 cargo install 的工具）
+scripts/verify-all.sh                  # 默认：G1 G2 G6 G7（快，无需额外工具链）
+scripts/verify-all.sh --full           # 追加 G3 G4 G5（依赖审计 / 覆盖率 / 密钥扫描）
+scripts/verify-all.sh --strict         # 缺工具即算失败（CI 用这个）
+scripts/verify-all.sh --list           # 列出全部门禁
+scripts/tests/test-gates.sh            # 门禁自身的自测（正例/反例 fixture）
 ```
 
-CI：在现有 `ci.yml` 的 `check` job 之后增加门禁 job，全部为阻塞项。
+- **工具缺失的语义**：默认把缺工具记为 `SKIP` 并打印安装提示（本地不装 cargo-deny
+  也能跑日常门禁）；`--strict` 下改为 `FAIL`。CI 使用 `--strict`，因此"缺工具"在 CI
+  一定是阻塞项，不会静默通过。
+- **汇总完整性**：每次运行都必须为每个执行过的门禁打印一行结果（`PASS`/`FAIL`/`SKIP`），
+  失败但不出现在汇总里视为门禁自身的缺陷（已由 `scripts/tests/test-gates.sh` 锁定）。
+- CI：在现有 `ci.yml` 的 `check` job 之后增加门禁 job，全部为阻塞项。
+
+### G2 的诊断诚实性
+
+层级序列（`22222223332222` 这类字符串）能发现结构漂移，但**无法定位缺失的小节**——
+所有二级标题在序列里长得一样。因此：
+
+- 二级标题数量不同 → 报告数量差异（例如 `reference=12, this=11`），并提示"有小节缺失或多出"；
+- 数量相同而序列不同 → 才报告"首个不同的标题位置"。
+
+不得用同一个"首个差异位置"去描述这两种情况（那会给出一个没有意义的位置）。
 
 ## 3. 与既有约定的关系
 

@@ -1,0 +1,13 @@
+# Fixture: every external reference is pinned; the local reference is exempt.
+name: fixture-ok
+on: workflow_dispatch
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+      - uses: ./local-action
+      - uses: liuchong/hoverstare@0123456789abcdef0123456789abcdef01234567 # v0.1.1

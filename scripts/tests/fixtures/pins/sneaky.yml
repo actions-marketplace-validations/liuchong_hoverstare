@@ -1,0 +1,12 @@
+# Fixture: plausible-but-wrong spellings. All five must fail closed.
+name: fixture-sneaky
+on: workflow_dispatch
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683" # v4.2.2
+      - {uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684} # v4.2.3
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+      - uses: actions/checkout@11bd7190 # v4.2.2
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2 trailing

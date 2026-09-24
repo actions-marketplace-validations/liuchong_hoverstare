@@ -48,14 +48,24 @@ P0 门禁脚本骨架 ──► S1 M17 审查单元与覆盖 ──┬──► 
 
 | 任务 | 内容 | 交付物 | 验收 |
 |---|---|---|---|
-| T20.1 | `scripts/verify-action-pins.sh`（行首锚定正则，`./` 豁免，非法形态一律失败） | 脚本 + 正例/反例 fixture | 在干净树上失败并列出全部 15 处待 pin 引用（此时是预期红） |
-| T20.2 | `scripts/check-doc-structure.sh`（`##` 序列比对，打印差异行号） | 脚本 + fixture | 六份 README 比对输出英文 12 / 其余 11 的差异点 |
-| T20.3 | `scripts/verify-spec-index.sh`（spec 索引 + `src/` 模块对应，含豁免清单） | 脚本 | 当前树全绿（spec 14–17 已在索引内） |
-| T20.4 | `scripts/verify-all.sh`（默认 G1/G2/G6/G7；`--full` 加 G3/G4） | 脚本 | 退出码聚合正确；`--full` 在缺工具时给出安装提示而非静默跳过 |
+| ✅ T20.1 | `scripts/verify-action-pins.sh`（行首锚定正则，`./` 豁免，非法形态一律失败） | 脚本 + 正例/反例 fixture | 在干净树上失败并列出全部 15 处待 pin 引用（此时是预期红） |
+| ✅ T20.2 | `scripts/check-doc-structure.sh`（`##` 序列比对，打印差异行号） | 脚本 + fixture | 六份 README 比对输出英文 12 / 其余 11 的差异点 |
+| ✅ T20.3 | `scripts/verify-spec-index.sh`（spec 索引 + `src/` 模块对应，含豁免清单） | 脚本 | 当前树全绿（spec 14–17 已在索引内） |
+| ✅ T20.4 | `scripts/verify-all.sh`（默认 G1/G2/G6/G7；`--full` 加 G3/G4） | 脚本 | 退出码聚合正确；`--full` 在缺工具时给出安装提示而非静默跳过 |
 | T20.5 | （不在 P0 做）CI 接线留到 S3 的 T20.10 | — | 见下方说明：避免 CI 长时间红 |
 
 > 说明：P0 的脚本在树还没修好时必然报红。因此 **P0 只把脚本做出来并在本地使用，
 > CI 接线与一次性修复一起放到 S3**，避免 CI 长时间红着失去信号价值。
+
+**P0 实测结果（交付时）**：
+
+- `scripts/tests/test-gates.sh`：18 项断言全过（正例/反例 fixture 覆盖 G1 与 G2 的各类形态）；
+- `scripts/verify-all.sh` 在真实树上：G1 FAIL（列出全部 15 处待 pin 引用）、G2 FAIL
+  （五份翻译各少一个小节）、G6 PASS、G7 PASS；
+- `cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets -- -D warnings`
+  干净，`cargo test --workspace` **219 passed / 0 failed**；
+- 过程中修掉门禁自身的两个缺陷：G2 在"数量不同"时给出的位置没有意义（改为报告数量差异）、
+  G6 失败时未计入汇总（改为每次运行每个门禁必有一行结果，并由自测锁定）。
 
 ## 3. S1 — M17 审查单元与覆盖契约
 
@@ -127,7 +137,8 @@ P0 门禁脚本骨架 ──► S1 M17 审查单元与覆盖 ──┬──► 
 - **不做发布**：不打 tag、不 `cargo publish`、不建 Release、不推 Marketplace（AGENTS.md §4.8）；
 - **回滚**：按任务 revert（代码与其同批文档一起回）；spec 不回滚——它是目标状态，
   若目标变化就改 spec 而不是恢复旧 spec；
-- **进度登记**：每完成一个任务勾选 `specs/README.md` 的 M17–M20 条目，并在本文表格补 `✅`。
+- **进度登记**：每完成一个任务就在本文表格的任务号前打 `✅`（`| ✅ T20.1 |`）；
+  里程碑**整体**完成（该 spec 的 §验收逐条通过）后才勾选 `specs/README.md` 的对应条目。
 
 ## 7. 风险登记
 
