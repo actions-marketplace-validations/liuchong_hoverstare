@@ -247,7 +247,7 @@ pub fn section_for_file<'a>(input: &'a str, path: &str) -> Option<&'a str> {
 /// without a size budget. Preview and the analysis both go through the selector,
 /// so no caller derives its own answer.
 pub fn filter_text(input: &str, ignore: &globset::GlobSet) -> (String, usize) {
-    let selection = crate::units::select_unbounded(input, ignore);
+    let selection = crate::units::select(input, &crate::units::SelectOptions::unbounded(ignore));
     let excluded = selection.excluded_count();
     (selection.text, excluded)
 }
@@ -360,6 +360,58 @@ fn path_priority(path: Option<&str>) -> u8 {
         4
     }
 }
+
+/// Whether a changed path is in the reviewable-kind allowlist (spec 14 §2,
+/// `extension`).
+///
+/// Reuses the priority table so there is exactly one list of "kinds we know how
+/// to review", plus a small set of extensionless files that are worth reading
+/// (`Dockerfile`, `Makefile`, ...).
+pub(crate) fn is_reviewable_path(path: &str) -> bool {
+    if path_priority(Some(path)) < 4 {
+        return true;
+    }
+    let base = path.rsplit('/').next().unwrap_or(path).to_ascii_lowercase();
+    if KNOWN_BASENAMES.contains(&base.as_str()) {
+        return true;
+    }
+    // Build definitions carry variants as suffixes (`Dockerfile.prod`,
+    // `Makefile.am`), and those are exactly the files worth reviewing.
+    if KNOWN_BASENAME_PREFIXES
+        .iter()
+        .any(|prefix| base.starts_with(prefix))
+    {
+        return true;
+    }
+    let ext = base.rsplit('.').next().unwrap_or("");
+    EXTRA_REVIEWABLE_EXTS.contains(&ext)
+}
+
+/// Kinds that are reviewable but absent from the spec 03 priority table:
+/// dependency manifests (`go.mod`), schema definitions (protobuf, GraphQL) and
+/// infrastructure/template sources. Found by running the strict gate over a real
+/// pull request, where `go.mod` was the one file mis-classified as unknown.
+const EXTRA_REVIEWABLE_EXTS: &[&str] = &[
+    "mod", "work", "proto", "graphql", "gql", "tf", "tfvars", "hcl", "s", "asm", "sv", "v", "j2",
+    "tpl", "hbs", "mustache", "zig", "nix", "sol",
+];
+
+/// Extensionless files whose content is reviewable code or build definition.
+const KNOWN_BASENAMES: &[&str] = &[
+    "procfile",
+    "vagrantfile",
+    "justfile",
+    "build",
+    "workspace",
+    ".gitignore",
+    ".gitattributes",
+    ".gitmodules",
+    ".dockerignore",
+    ".editorconfig",
+];
+
+/// Build-definition files that carry their variant as a suffix.
+const KNOWN_BASENAME_PREFIXES: &[&str] = &["dockerfile", "makefile", "gnumakefile", "jenkinsfile"];
 
 /// Large-diff truncation (spec 03):
 /// - truncates at whole-file granularity (never cuts a file in half);

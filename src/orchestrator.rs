@@ -286,7 +286,10 @@ async fn prepare_inputs(cfg: &Config, args: &ReviewArgs, force_full: bool) -> an
     // Selection runs once, through the one implementation (spec 14 §2). The
     // anchoring pass needs the same decision with the size budget applied, so it
     // reads the same selection's text instead of deriving its own.
-    let full_selection = units::select(&full_diff, &cfg.ignore, cfg.max_diff_kb);
+    let full_selection = units::select(
+        &full_diff,
+        &units::SelectOptions::new(&cfg.ignore, cfg.max_diff_kb).strict(cfg.select_strict),
+    );
     let anchor_parsed = ParsedDiff::parse(&full_selection.text);
 
     // Analysis scope (spec 07: incremental = delta diff of prior..head)
@@ -313,7 +316,10 @@ async fn prepare_inputs(cfg: &Config, args: &ReviewArgs, force_full: bool) -> an
                 .await,
             ));
         }
-        units::select(&delta, &cfg.ignore, cfg.max_diff_kb)
+        units::select(
+            &delta,
+            &units::SelectOptions::new(&cfg.ignore, cfg.max_diff_kb).strict(cfg.select_strict),
+        )
     } else {
         full_selection.clone()
     };
@@ -897,7 +903,10 @@ mod tests {
 
     fn selection_with_one_unit() -> units::Selection {
         let diff = "diff --git a/src/a.rs b/src/a.rs\n--- a/src/a.rs\n+++ b/src/a.rs\n@@ -1,0 +1,1 @@\n+x\n";
-        units::select(diff, &globset::GlobSetBuilder::new().build().unwrap(), 400)
+        units::select(
+            diff,
+            &units::SelectOptions::new(&globset::GlobSetBuilder::new().build().unwrap(), 400),
+        )
     }
 
     #[test]
@@ -914,7 +923,10 @@ mod tests {
     #[test]
     fn failure_notes_state_the_coverage() {
         let diff = "diff --git a/src/a.rs b/src/a.rs\n--- a/src/a.rs\n+++ b/src/a.rs\n@@ -1,0 +1,1 @@\n+x\n";
-        let selection = units::select(diff, &globset::GlobSetBuilder::new().build().unwrap(), 400);
+        let selection = units::select(
+            diff,
+            &units::SelectOptions::new(&globset::GlobSetBuilder::new().build().unwrap(), 400),
+        );
         let mut ledger = units::CoverageLedger::freeze(&selection.units);
         ledger.fail_all("provider 500");
         let note = failure_note("analysis failed (fail-open)", &ledger);

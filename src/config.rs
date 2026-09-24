@@ -37,6 +37,9 @@ pub struct Config {
     pub status_checks: bool,
     /// Whether the review body states the coverage (spec 14 §4/§6).
     pub report_coverage: bool,
+    /// Enable the exclusion classes that shrink what is reviewed
+    /// (`secret-path` / `default-path` / `extension`, spec 14 §2).
+    pub select_strict: bool,
     pub instructions: String,
     /// Whether to set temperature on requests (some endpoints only accept the
     /// default; when false the field is not sent)
@@ -481,6 +484,7 @@ struct TomlConfig {
     fail_closed: Option<bool>,
     status_checks: Option<bool>,
     report_coverage: Option<bool>,
+    select_strict: Option<bool>,
     instructions: Option<String>,
     set_temperature: Option<bool>,
     thinking: Option<String>,
@@ -774,6 +778,7 @@ impl Config {
             fail_closed: t.fail_closed.unwrap_or(false),
             status_checks: t.status_checks.unwrap_or(false),
             report_coverage: t.report_coverage.unwrap_or(true),
+            select_strict: t.select_strict.unwrap_or(false),
             instructions: t.instructions.unwrap_or_default(),
             set_temperature: t.set_temperature.unwrap_or(true),
             reasoning,

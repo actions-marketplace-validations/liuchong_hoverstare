@@ -110,14 +110,14 @@ impl T {
 
     pub fn excluded_note(&self, n: usize) -> String {
         match self.0 {
-            Lang::En => format!(" (plus {n} lockfile/generated file(s) skipped by rules)"),
-            Lang::ZhCn => format!("（另有 {n} 个锁定/生成文件按规则跳过）"),
-            Lang::Ru => format!(" (ещё {n} lock/сгенерированных файлов пропущено по правилам)"),
-            Lang::Fr => format!(" (plus {n} fichier(s) lock/généré(s) ignoré(s) par les règles)"),
+            Lang::En => format!(" (plus {n} file(s) skipped by rules)"),
+            Lang::ZhCn => format!("（另有 {n} 个文件按规则跳过）"),
+            Lang::Ru => format!(" (ещё {n} файлов пропущено по правилам)"),
+            Lang::Fr => format!(" (plus {n} fichier(s) ignoré(s) par les règles)"),
             Lang::De => {
-                format!(" (zusätzlich {n} Lock-/generierte Datei(en) per Regel übersprungen)")
+                format!(" (zusätzlich {n} Datei(en) per Regel übersprungen)")
             }
-            Lang::Es => format!(" (además {n} archivo(s) lock/generado(s) omitido(s) por reglas)"),
+            Lang::Es => format!(" (además {n} archivo(s) omitido(s) por reglas)"),
         }
     }
 

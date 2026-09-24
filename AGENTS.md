@@ -284,6 +284,12 @@ cargo fmt && cargo clippy --workspace --all-targets -- -D warnings
     （曾默认写 stdout）。否则 `--preview`（以及 spec 16 的结构化输出）会把日志混进管道，
     `--format json | jq` 直接失效。新增任何"打印到 stdout"的功能时，先确认日志仍在 stderr。
 
+35. **"未知文件类型"的白名单别顺手沿用旧表**：spec 03 的文件优先级表是给"截断时谁先留下"
+    用的，不等于"哪些类型值得审"。严格模式（`select_strict`）直接复用它，结果在真实 PR 上把
+    `go.mod` 判成未知类型排除掉了——依赖清单、schema（proto/graphql）、基础设施（tf/hcl）、
+    模板（j2/hbs）这些"清单与定义类"文件都不在旧表里。结论：判定"能不能审"要有自己的清单，
+    并且必须拿真实 PR 跑一遍对照（默认 vs 严格）才能发现这类盲区。
+
 
 ## 7.5 Dogfood 验证手册（开发模式端到端怎么测）
 

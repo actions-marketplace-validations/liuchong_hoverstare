@@ -11,6 +11,7 @@
 //! the diff text and the configuration.
 
 use std::collections::BTreeMap;
+use std::sync::OnceLock;
 
 use globset::GlobSet;
 use sha1::{Digest, Sha1};
@@ -327,17 +328,155 @@ impl CoverageLedger {
     }
 }
 
-/// Selection with a size budget (spec 03 keeps the priority truncation).
-pub fn select(input: &str, ignore: &GlobSet, max_diff_kb: usize) -> Selection {
-    select_impl(input, ignore, Some(max_diff_kb))
+/// Selection knobs, bundled because the set grows (strictness today, grouping
+/// next) and because "the same selection" must also mean the same options
+/// (spec 14 §2).
+#[derive(Debug, Clone, Copy)]
+pub struct SelectOptions<'a> {
+    pub ignore: &'a GlobSet,
+    /// `None` = no size budget (the anchoring path).
+    pub max_diff_kb: Option<usize>,
+    /// Enable the exclusion classes that *shrink* what is reviewed:
+    /// `secret-path`, `default-path`, `extension` (spec 14 §2).
+    pub strict: bool,
 }
 
-/// Selection without a size budget: every file that survives the path gates.
-pub fn select_unbounded(input: &str, ignore: &GlobSet) -> Selection {
-    select_impl(input, ignore, None)
+impl<'a> SelectOptions<'a> {
+    pub fn new(ignore: &'a GlobSet, max_diff_kb: usize) -> Self {
+        Self {
+            ignore,
+            max_diff_kb: Some(max_diff_kb),
+            strict: false,
+        }
+    }
+
+    /// No size budget: every file that survives the path gates.
+    pub fn unbounded(ignore: &'a GlobSet) -> Self {
+        Self {
+            ignore,
+            max_diff_kb: None,
+            strict: false,
+        }
+    }
+
+    pub fn strict(mut self, strict: bool) -> Self {
+        self.strict = strict;
+        self
+    }
 }
 
-fn select_impl(input: &str, ignore: &GlobSet, max_diff_kb: Option<usize>) -> Selection {
+/// The one selection implementation (spec 14 §2).
+pub fn select(input: &str, opts: &SelectOptions<'_>) -> Selection {
+    select_impl(input, opts)
+}
+
+/// Paths whose content must not travel to a model provider (spec 14 §2).
+///
+/// Both the bare and the `**/`-prefixed form are listed for the same name: the
+/// bare form catches a repository root, the prefixed one any depth, and the glob
+/// semantics of "zero or more directories" are easy to get subtly wrong.
+const SECRET_PATH_PATTERNS: &[&str] = &[
+    ".env",
+    "**/.env",
+    ".env.*",
+    "**/.env.*",
+    "*.env",
+    "**/*.env",
+    "*.pem",
+    "**/*.pem",
+    "*.key",
+    "**/*.key",
+    "*.p12",
+    "**/*.p12",
+    "*.pfx",
+    "**/*.pfx",
+    "*.jks",
+    "**/*.jks",
+    "*.keystore",
+    "**/*.keystore",
+    "id_rsa*",
+    "**/id_rsa*",
+    "id_ed25519*",
+    "**/id_ed25519*",
+    "id_ecdsa*",
+    "**/id_ecdsa*",
+    "id_dsa*",
+    "**/id_dsa*",
+    ".netrc",
+    "**/.netrc",
+    ".npmrc",
+    "**/.npmrc",
+    ".pypirc",
+    "**/.pypirc",
+    ".htpasswd",
+    "**/.htpasswd",
+    "credentials",
+    "**/credentials",
+    "credentials.json",
+    "**/credentials.json",
+    "*service-account*.json",
+    "**/*service-account*.json",
+    "secrets.yml",
+    "**/secrets.yml",
+    "secrets.yaml",
+    "**/secrets.yaml",
+    "*.tfstate",
+    "**/*.tfstate",
+    "*.tfstate.backup",
+    "**/*.tfstate.backup",
+    "kubeconfig",
+    "**/kubeconfig",
+    ".ssh/**",
+    "**/.ssh/**",
+    ".docker/config.json",
+    "**/.docker/config.json",
+];
+
+/// Built-in "not worth a model's attention" paths (spec 14 §2): dependency trees,
+/// build output, lockfiles, generated code.
+const DEFAULT_PATH_PATTERNS: &[&str] = &[
+    "**/node_modules/**",
+    "**/vendor/**",
+    "**/dist/**",
+    "**/build/**",
+    "**/target/**",
+    "**/*.min.js",
+    "**/*.min.css",
+    "**/*.map",
+    "**/*.lock",
+    "**/package-lock.json",
+    "**/yarn.lock",
+    "**/pnpm-lock.yaml",
+    "**/go.sum",
+    "**/*.generated.*",
+    "**/*.pb.go",
+    "**/*.g.dart",
+];
+
+fn build_globset(patterns: &[&str]) -> GlobSet {
+    let mut builder = globset::GlobSetBuilder::new();
+    for pattern in patterns {
+        // A bad built-in pattern would silently disable a gate, so fail loudly;
+        // `built_in_catalogs_compile` keeps this unreachable in practice.
+        builder.add(globset::Glob::new(pattern).expect("built-in exclusion pattern must compile"));
+    }
+    builder
+        .build()
+        .expect("built-in exclusion globset must build")
+}
+
+fn secret_globset() -> &'static GlobSet {
+    static SET: OnceLock<GlobSet> = OnceLock::new();
+    SET.get_or_init(|| build_globset(SECRET_PATH_PATTERNS))
+}
+
+fn default_path_globset() -> &'static GlobSet {
+    static SET: OnceLock<GlobSet> = OnceLock::new();
+    SET.get_or_init(|| build_globset(DEFAULT_PATH_PATTERNS))
+}
+
+fn select_impl(input: &str, opts: &SelectOptions<'_>) -> Selection {
+    let ignore = opts.ignore;
     let mut excluded = Vec::new();
     let mut filtered = String::with_capacity(input.len());
 
@@ -345,6 +484,7 @@ fn select_impl(input: &str, ignore: &GlobSet, max_diff_kb: Option<usize>) -> Sel
         // Header lines and sections whose path is unrecognized have no gates to
         // apply and are simply kept.
         if let Some(path) = diff::section_path(section) {
+            // Fixed order (spec 14 §2) so that one file has exactly one reason.
             if ignore.is_match(path) {
                 excluded.push(ExcludedFile {
                     path: path.to_string(),
@@ -353,10 +493,34 @@ fn select_impl(input: &str, ignore: &GlobSet, max_diff_kb: Option<usize>) -> Sel
                 });
                 continue;
             }
+            if opts.strict && secret_globset().is_match(path) {
+                excluded.push(ExcludedFile {
+                    path: path.to_string(),
+                    reason: ExcludeReason::SecretPath,
+                    kept_in_text: false,
+                });
+                continue;
+            }
+            if opts.strict && default_path_globset().is_match(path) {
+                excluded.push(ExcludedFile {
+                    path: path.to_string(),
+                    reason: ExcludeReason::DefaultPath,
+                    kept_in_text: false,
+                });
+                continue;
+            }
             if diff::looks_generated(section) {
                 excluded.push(ExcludedFile {
                     path: path.to_string(),
                     reason: ExcludeReason::Generated,
+                    kept_in_text: false,
+                });
+                continue;
+            }
+            if opts.strict && !diff::is_reviewable_path(path) {
+                excluded.push(ExcludedFile {
+                    path: path.to_string(),
+                    reason: ExcludeReason::Extension,
                     kept_in_text: false,
                 });
                 continue;
@@ -376,7 +540,7 @@ fn select_impl(input: &str, ignore: &GlobSet, max_diff_kb: Option<usize>) -> Sel
         }
     }
 
-    let text = match max_diff_kb {
+    let text = match opts.max_diff_kb {
         None => filtered,
         Some(kb) => {
             let truncation = diff::truncate_text(&filtered, kb);
@@ -498,6 +662,31 @@ diff --git a/gen.rs b/gen.rs
  fn x() {}
 ";
 
+    const ENV_FILE: &str = "\
+diff --git a/.env b/.env
+index 7777777..8888888 100644
+--- a/.env
++++ b/.env
+@@ -1,0 +1,1 @@
++SECRET=1
+";
+
+    const VENDORED: &str = "\
+diff --git a/node_modules/pkg/index.js b/node_modules/pkg/index.js
+--- a/node_modules/pkg/index.js
++++ b/node_modules/pkg/index.js
+@@ -1,0 +1,1 @@
++module.exports = 1;
+";
+
+    const UNKNOWN_EXT: &str = "\
+diff --git a/assets/logo.psd b/assets/logo.psd
+--- a/assets/logo.psd
++++ b/assets/logo.psd
+@@ -1,0 +1,1 @@
++binary-ish
+";
+
     const DELETED: &str = "\
 diff --git a/gone.rs b/gone.rs
 index 5555555..6666666 100644
@@ -509,8 +698,14 @@ index 5555555..6666666 100644
 
     #[test]
     fn select_is_pure() {
-        let a = select_unbounded(&format!("{SRC}{LOCK}"), &no_ignore());
-        let b = select_unbounded(&format!("{SRC}{LOCK}"), &no_ignore());
+        let a = select(
+            &format!("{SRC}{LOCK}"),
+            &SelectOptions::unbounded(&no_ignore()),
+        );
+        let b = select(
+            &format!("{SRC}{LOCK}"),
+            &SelectOptions::unbounded(&no_ignore()),
+        );
         assert_eq!(a.units, b.units);
         assert_eq!(a.excluded, b.excluded);
         assert_eq!(a.text, b.text);
@@ -519,7 +714,10 @@ index 5555555..6666666 100644
 
     #[test]
     fn ignored_path_is_excluded_and_absent_from_text() {
-        let sel = select_unbounded(&format!("{SRC}{LOCK}"), &ignore_set(&["Cargo.lock"]));
+        let sel = select(
+            &format!("{SRC}{LOCK}"),
+            &SelectOptions::unbounded(&ignore_set(&["Cargo.lock"])),
+        );
         assert_eq!(sel.units.len(), 1);
         assert_eq!(sel.units[0].files, vec!["src/main.rs"]);
         assert_eq!(sel.excluded_count(), 1);
@@ -529,14 +727,17 @@ index 5555555..6666666 100644
 
     #[test]
     fn generated_content_is_excluded() {
-        let sel = select_unbounded(GENERATED, &no_ignore());
+        let sel = select(GENERATED, &SelectOptions::unbounded(&no_ignore()));
         assert!(sel.units.is_empty());
         assert_eq!(sel.excluded_by(ExcludeReason::Generated).len(), 1);
     }
 
     #[test]
     fn deleted_file_is_excluded_from_units_but_kept_in_text() {
-        let sel = select_unbounded(&format!("{SRC}{DELETED}"), &no_ignore());
+        let sel = select(
+            &format!("{SRC}{DELETED}"),
+            &SelectOptions::unbounded(&no_ignore()),
+        );
         assert_eq!(sel.units.len(), 1, "deleted files are not reviewable");
         let deleted = sel.excluded_by(ExcludeReason::Deleted);
         assert_eq!(deleted.len(), 1);
@@ -561,7 +762,10 @@ index 5555555..6666666 100644
             src.len() + lock.len() > 1024,
             "fixture must exceed the budget"
         );
-        let sel = select(&format!("{src}{lock}"), &no_ignore(), 1);
+        let sel = select(
+            &format!("{src}{lock}"),
+            &SelectOptions::new(&no_ignore(), 1),
+        );
         assert_eq!(sel.oversized_dropped(), vec!["Cargo.lock".to_string()]);
         assert_eq!(sel.units.len(), 1);
         assert_eq!(sel.units[0].files, vec!["src/main.rs"]);
@@ -571,31 +775,40 @@ index 5555555..6666666 100644
 
     #[test]
     fn first_file_survives_an_impossible_budget() {
-        let sel = select(&format!("{SRC}{LOCK}"), &no_ignore(), 0);
+        let sel = select(
+            &format!("{SRC}{LOCK}"),
+            &SelectOptions::new(&no_ignore(), 0),
+        );
         assert!(!sel.units.is_empty(), "floor guarantee: first file is kept");
         assert!(sel.text.contains("src/main.rs"));
     }
 
     #[test]
     fn duplicate_paths_yield_one_unit() {
-        let sel = select_unbounded(&format!("{SRC}{SRC}"), &no_ignore());
+        let sel = select(
+            &format!("{SRC}{SRC}"),
+            &SelectOptions::unbounded(&no_ignore()),
+        );
         assert_eq!(sel.units.len(), 1);
     }
 
     #[test]
     fn unit_fingerprint_tracks_content_not_identity() {
-        let a = select_unbounded(SRC, &no_ignore());
-        let b = select_unbounded(&SRC.replace("+new", "+newer"), &no_ignore());
+        let a = select(SRC, &SelectOptions::unbounded(&no_ignore()));
+        let b = select(
+            &SRC.replace("+new", "+newer"),
+            &SelectOptions::unbounded(&no_ignore()),
+        );
         assert_eq!(a.units[0].unit_id, b.units[0].unit_id);
         assert_ne!(a.units[0].unit_fp, b.units[0].unit_fp);
     }
 
     #[test]
     fn unit_id_is_content_independent() {
-        let a = select_unbounded(SRC, &no_ignore());
-        let b = select_unbounded(
+        let a = select(SRC, &SelectOptions::unbounded(&no_ignore()));
+        let b = select(
             &SRC.replace("index 1111111..2222222", "index aaaaaaa..bbbbbbb"),
-            &no_ignore(),
+            &SelectOptions::unbounded(&no_ignore()),
         );
         assert_eq!(a.units[0].unit_id, b.units[0].unit_id);
     }
@@ -677,6 +890,109 @@ index 5555555..6666666 100644
     }
 
     #[test]
+    fn built_in_catalogs_compile_and_cover_root_and_nested_forms() {
+        for path in [
+            ".env",
+            "sub/.env",
+            "deep/nested/.env.local",
+            "id_rsa",
+            "keys/id_rsa.pub",
+            "svc/service-account-prod.json",
+        ] {
+            assert!(
+                secret_globset().is_match(path),
+                "{path} must be treated as a secret path"
+            );
+        }
+        for path in [
+            "node_modules/a/b.js",
+            "web/dist/x.js",
+            "Cargo.lock",
+            "app.min.js",
+            "api.pb.go",
+        ] {
+            assert!(
+                default_path_globset().is_match(path),
+                "{path} must be a built-in default exclusion"
+            );
+        }
+    }
+
+    #[test]
+    fn strict_gates_are_off_by_default() {
+        let sel = select(
+            &format!("{ENV_FILE}{VENDORED}{UNKNOWN_EXT}"),
+            &SelectOptions::new(&no_ignore(), 400),
+        );
+        assert_eq!(sel.units.len(), 3, "default behaviour must not shrink");
+        assert!(sel.excluded_by(ExcludeReason::SecretPath).is_empty());
+        assert!(sel.excluded_by(ExcludeReason::DefaultPath).is_empty());
+        assert!(sel.excluded_by(ExcludeReason::Extension).is_empty());
+    }
+
+    #[test]
+    fn strict_gates_exclude_and_name_the_reason() {
+        let sel = select(
+            &format!("{ENV_FILE}{VENDORED}{UNKNOWN_EXT}{SRC}"),
+            &SelectOptions::new(&no_ignore(), 400).strict(true),
+        );
+        assert_eq!(sel.units.len(), 1);
+        assert_eq!(sel.units[0].files, vec!["src/main.rs"]);
+        assert_eq!(sel.excluded_by(ExcludeReason::SecretPath).len(), 1);
+        assert_eq!(sel.excluded_by(ExcludeReason::DefaultPath).len(), 1);
+        assert_eq!(sel.excluded_by(ExcludeReason::Extension).len(), 1);
+        // Nothing is dropped silently: every exclusion is in the one list.
+        assert_eq!(sel.excluded_count(), 3);
+    }
+
+    #[test]
+    fn strict_order_decides_the_reason_for_a_multi_hit_file() {
+        // node_modules/service-account.json hits secret-path and default-path;
+        // the fixed order attributes it to secret-path (spec 14 §2).
+        let input = "\
+diff --git a/node_modules/service-account.json b/node_modules/service-account.json
+--- a/node_modules/service-account.json
++++ b/node_modules/service-account.json
+@@ -1,0 +1,1 @@
++{}
+";
+        let sel = select(input, &SelectOptions::new(&no_ignore(), 400).strict(true));
+        assert_eq!(sel.excluded_by(ExcludeReason::SecretPath).len(), 1);
+        assert!(sel.excluded_by(ExcludeReason::DefaultPath).is_empty());
+    }
+
+    #[test]
+    fn extension_gate_keeps_extensionless_build_files() {
+        assert!(diff::is_reviewable_path("Dockerfile"));
+        assert!(diff::is_reviewable_path("src/main.rs"));
+        assert!(
+            diff::is_reviewable_path("deploy/Dockerfile.prod"),
+            "build-definition variants carry a suffix"
+        );
+        // Kinds that are reviewable but absent from the spec 03 priority table.
+        // `lustre/go.mod` is a real case: it was the single file the strict gate
+        // mis-classified while running against a real pull request.
+        assert!(diff::is_reviewable_path("lustre/go.mod"));
+        assert!(diff::is_reviewable_path("api/service.proto"));
+        assert!(diff::is_reviewable_path("infra/main.tf"));
+        assert!(!diff::is_reviewable_path("assets/logo.psd"));
+
+        let input = "\
+diff --git a/Dockerfile b/Dockerfile
+--- a/Dockerfile
++++ b/Dockerfile
+@@ -1,0 +1,1 @@
++FROM scratch
+";
+        let sel = select(input, &SelectOptions::new(&no_ignore(), 400).strict(true));
+        assert_eq!(
+            sel.units.len(),
+            1,
+            "Dockerfile stays reviewable under strict"
+        );
+    }
+
+    #[test]
     fn wrapper_parity_with_the_legacy_helpers() {
         // The selection must stay a superset-free replacement for
         // filter_text + truncate_text: same text, same excluded/were-dropped sets.
@@ -691,7 +1007,7 @@ index 5555555..6666666 100644
         let (legacy_text, legacy_excluded) = diff::filter_text(&input, &ignore);
         let legacy_trunc = diff::truncate_text(&legacy_text, 1);
 
-        let sel = select(&input, &ignore, 1);
+        let sel = select(&input, &SelectOptions::new(&ignore, 1));
         assert!(
             !legacy_trunc.truncated_files.is_empty(),
             "parity must be exercised with a real truncation"
