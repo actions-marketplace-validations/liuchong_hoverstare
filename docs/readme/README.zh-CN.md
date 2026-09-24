@@ -303,6 +303,14 @@ gh api -X POST repos/OWNER/REPO/actions/runs/RUN_ID/approve
 ## 本地开发
 
 ```bash
+# 预览选择结果，完全不调用模型（无需 API key）
+cargo run -- review --repo owner/repo --pr 123 --preview
+cargo run -- review --repo owner/repo --pr 123 --preview --format json
+
+# 真实运行的结构化结果（契约见 specs/16）
+cargo run -- review --repo owner/repo --pr 123 --format json
+cargo run -- review --repo owner/repo --pr 123 --format sarif --output out/result.sarif
+
 # 对公开 PR 完整 dry-run（不发布）
 export OPENAI_API_KEY=... OPENAI_BASE_URL=... HOVERSTARE_MODEL=...
 cargo run -- review --repo owner/repo --pr 123 --dry-run
@@ -316,6 +324,10 @@ cargo fmt
 ```
 
 设计文档与里程碑计划见 [`specs/`](../../specs/README.md)——设计决策的单一事实来源。
+
+## 贡献
+
+质量门、提交信息约定与 PR 评审流程见 [`CONTRIBUTING.md`](../../CONTRIBUTING.md)。
 
 ## Star 历史与贡献者
 

@@ -311,6 +311,13 @@ La tâche était probablement trop vague pour un round budgété. Répondez avec
 ## Développement local
 
 ```bash
+# Aperçu de la sélection, sans aucun appel au modèle (pas de clé API)
+cargo run -- review --repo owner/repo --pr 123 --preview
+cargo run -- review --repo owner/repo --pr 123 --preview --format json
+
+# Résultat lisible par machine d'un vrai passage (contrat : specs/16)
+cargo run -- review --repo owner/repo --pr 123 --format json
+cargo run -- review --repo owner/repo --pr 123 --format sarif --output out/result.sarif
 # Dry-run d'une revue complète d'une PR publique (sans publication)
 export OPENAI_API_KEY=... OPENAI_BASE_URL=... HOVERSTARE_MODEL=...
 cargo run -- review --repo owner/repo --pr 123 --dry-run
@@ -325,6 +332,10 @@ cargo fmt
 
 Les specs et le plan de jalons sont dans [`specs/`](../../specs/README.md) — la
 source de vérité unique pour les décisions de conception.
+
+## Contribuer
+
+Les contrôles qualité, la convention de messages de commit et le processus de revue des PR sont dans [`CONTRIBUTING.md`](../../CONTRIBUTING.md).
 
 ## Historique des étoiles et contributeurs
 

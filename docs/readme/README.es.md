@@ -309,6 +309,13 @@ Normalmente la tarea era demasiado vaga para una ronda presupuestada. Responde c
 ## Desarrollo local
 
 ```bash
+# Ver la selección sin llamar al modelo (no hace falta clave de API)
+cargo run -- review --repo owner/repo --pr 123 --preview
+cargo run -- review --repo owner/repo --pr 123 --preview --format json
+
+# Resultado legible por máquina de una ejecución real (contrato: specs/16)
+cargo run -- review --repo owner/repo --pr 123 --format json
+cargo run -- review --repo owner/repo --pr 123 --format sarif --output out/result.sarif
 # Dry-run de una revisión completa de un PR público (sin publicar)
 export OPENAI_API_KEY=... OPENAI_BASE_URL=... HOVERSTARE_MODEL=...
 cargo run -- review --repo owner/repo --pr 123 --dry-run
@@ -323,6 +330,10 @@ cargo fmt
 
 Las specs y el plan de hitos están en [`specs/`](../../specs/README.md) — la fuente
 única de verdad para las decisiones de diseño.
+
+## Contribuir
+
+Las comprobaciones de calidad, la convención de mensajes de commit y el proceso de revisión de PR están en [`CONTRIBUTING.md`](../../CONTRIBUTING.md).
 
 ## Historial de estrellas y colaboradores
 

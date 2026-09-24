@@ -306,6 +306,13 @@ CI — GitHub всё равно пишет `github-actions[bot]`. Ослабле
 ## Локальная разработка
 
 ```bash
+# Предпросмотр выборки без вызова модели (ключ API не нужен)
+cargo run -- review --repo owner/repo --pr 123 --preview
+cargo run -- review --repo owner/repo --pr 123 --preview --format json
+
+# Машиночитаемый результат реального прогона (контракт — specs/16)
+cargo run -- review --repo owner/repo --pr 123 --format json
+cargo run -- review --repo owner/repo --pr 123 --format sarif --output out/result.sarif
 # Полный dry-run ревью публичного PR (без публикации)
 export OPENAI_API_KEY=... OPENAI_BASE_URL=... HOVERSTARE_MODEL=...
 cargo run -- review --repo owner/repo --pr 123 --dry-run
@@ -320,6 +327,10 @@ cargo fmt
 
 Спецификации и план вех — в [`specs/`](../../specs/README.md), единственный
 источник правды по проектным решениям.
+
+## Участие
+
+Проверки качества, соглашение о сообщениях коммитов и процесс ревью PR описаны в [`CONTRIBUTING.md`](../../CONTRIBUTING.md).
 
 ## История звёзд и участники
 

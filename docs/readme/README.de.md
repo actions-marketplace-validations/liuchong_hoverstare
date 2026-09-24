@@ -311,6 +311,13 @@ Meist war die Aufgabe zu vage für eine budgetierte Runde. Antworte mit einer sc
 ## Lokale Entwicklung
 
 ```bash
+# Auswahl ansehen, ganz ohne Modellaufruf (kein API-Schlüssel nötig)
+cargo run -- review --repo owner/repo --pr 123 --preview
+cargo run -- review --repo owner/repo --pr 123 --preview --format json
+
+# Maschinenlesbares Ergebnis eines echten Laufs (Vertrag: specs/16)
+cargo run -- review --repo owner/repo --pr 123 --format json
+cargo run -- review --repo owner/repo --pr 123 --format sarif --output out/result.sarif
 # Vollständiges Review eines öffentlichen PRs als Dry-Run (ohne Veröffentlichung)
 export OPENAI_API_KEY=... OPENAI_BASE_URL=... HOVERSTARE_MODEL=...
 cargo run -- review --repo owner/repo --pr 123 --dry-run
@@ -325,6 +332,10 @@ cargo fmt
 
 Specs und Meilensteinplan liegen in [`specs/`](../../specs/README.md) — die
 Single Source of Truth für Design-Entscheidungen.
+
+## Mitwirken
+
+Qualitätsprüfungen, Commit-Nachrichten-Konvention und PR-Review-Prozess stehen in [`CONTRIBUTING.md`](../../CONTRIBUTING.md).
 
 ## Star-Verlauf & Mitwirkende
 
